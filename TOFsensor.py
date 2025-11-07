@@ -4,17 +4,19 @@ import math
 
 import board            # Blinka pin names for Raspberry Pi
 import busio
-from digitalio import DigitalInOut, Direction, Pull
+from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
 
-# -------- Addresses (dual sensors) --------
+# -------- Addresses (dual sensors + front) --------
 LOX1_ADDRESS = 0x30   # Right
 LOX2_ADDRESS = 0x31   # Left
+LOX3_ADDRESS = 0x32   # Front
 
 # -------- XSHUT pins (choose your actual GPIOs) --------
-# Example uses board.D6 and board.D7; change if your wiring differs.
+# Example uses D7 (GPIO7), D6 (GPIO6), D5 (GPIO5); change if your wiring differs.
 SHT_LOX1_PIN = board.D7   # Right XSHUT
 SHT_LOX2_PIN = board.D6   # Left  XSHUT
+SHT_LOX3_PIN = board.D5   # Front XSHUT
 
 # -------- Measurement struct analog --------
 class Measurement:
@@ -31,55 +33,45 @@ havePrevPair = False
 lastSampleMs = 0
 SAMPLE_PERIOD_MS = 90  # ~11.1 Hz
 
-# ===== EMA low-pass state for (Right - Left) =====
-diffFilt = float("nan")
+# ===== EMA low-pass =====
+diffFilt = float("nan")   # for (Right - Left)
+frontFilt = float("nan")  # for Front distance
 ALPHA = 0.20  # lower = smoother
+
+# ===== Slope thresholds (mm/s) =====
+SLOPE_THRESH_MMPS = 60.0
+SLOPE_HARD_MMPS   = 1000.0
+
+# ===== Position thresholds for (R-L) hysteresis (mm) =====
+DIFF_ON_MM    = 40.0
+DIFF_OFF_MM   = 25.0
+DIFF_HARD_MM  = 150.0
 
 # ---- helpers ----
 def present(m: Measurement) -> bool:
-    # Treat only status 4 as true Out-Of-Range (same behavior as your C++)
+    # Treat only status 4 as true Out-Of-Range
     return m.RangeStatus != 4
 
 def validStrict(m: Measurement) -> bool:
-    # Mirror your "usable but warn" semantics: 0,1,2,7 are considered ok for telemetry
+    # Usable statuses (telemetry only)
     return m.RangeStatus in (0, 1, 2, 7)
 
-def updateDirectionDebounced(sDiff: float):
-    # static storage via function attributes
+# ---- silent debouncer (we print only the final summary line) ----
+def updateDirectionDebounced(decision: int):
+    """
+    Debounce decision without printing.
+    -2 L hard, -1 L, 0 straight, +1 R, +2 R hard
+    """
     if not hasattr(updateDirectionDebounced, "sameCount"):
         updateDirectionDebounced.sameCount = 0
-        updateDirectionDebounced.lastDecision = 0  # -2 L hard, -1 L, 0 straight, +1 R, +2 R hard
+        updateDirectionDebounced.lastDecision = 0
 
-    d = 0
-    if sDiff < -1000:
-        d = -2
-    elif sDiff > 1000:
-        d = +2
-    elif sDiff <= -60:
-        d = -1
-    elif sDiff >= +60:
-        d = +1
-    else:
-        d = 0
-
-    if d == updateDirectionDebounced.lastDecision:
+    if decision == updateDirectionDebounced.lastDecision:
         updateDirectionDebounced.sameCount += 1
     else:
-        updateDirectionDebounced.lastDecision = d
+        updateDirectionDebounced.lastDecision = decision
         updateDirectionDebounced.sameCount = 1
-
-    if updateDirectionDebounced.sameCount >= 3:
-        if d == -2:
-            print("robot is turning hard left")
-        elif d == -1:
-            print("robot is dynamically adjusting left")
-        elif d == 0:
-            print("robot stays straight")
-        elif d == +1:
-            print("robot is dynamically adjusting right")
-        else:
-            print("robot is turning hard right")
-        updateDirectionDebounced.sameCount = 0  # emit once per stable decision
+    # intentionally no prints
 
 # ---- hardware bring-up ----
 i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
@@ -87,24 +79,25 @@ i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
 # XSHUT controls
 xshut1 = DigitalInOut(SHT_LOX1_PIN); xshut1.direction = Direction.OUTPUT
 xshut2 = DigitalInOut(SHT_LOX2_PIN); xshut2.direction = Direction.OUTPUT
+xshut3 = DigitalInOut(SHT_LOX3_PIN); xshut3.direction = Direction.OUTPUT
 
-# Placeholders to hold sensor objects
+# Sensor objects
 lox1 = None  # Right
 lox2 = None  # Left
+lox3 = None  # Front
 
 def setID():
-    global lox1, lox2
+    global lox1, lox2, lox3
 
     # all reset (XSHUT LOW)
     xshut1.value = False
     xshut2.value = False
+    xshut3.value = False
     time.sleep(0.01)
 
     # Bring up Right only
     xshut1.value = True
     time.sleep(0.01)
-
-    # init LOX1 at default 0x29 then set to 0x30
     try:
         lox1 = VL53L0X(i2c)  # default address 0x29
     except Exception as e:
@@ -117,10 +110,8 @@ def setID():
     # Bring up Left only
     xshut2.value = True
     time.sleep(0.01)
-
-    # init LOX2 at default 0x29 then set to 0x31
     try:
-        lox2 = VL53L0X(i2c)  # still at 0x29 because left was held in reset
+        lox2 = VL53L0X(i2c)  # at 0x29 (left was in reset)
     except Exception as e:
         print("Failed to boot second VL53L0X (Left):", e)
         raise SystemExit(1)
@@ -128,10 +119,23 @@ def setID():
     lox2.set_address(LOX2_ADDRESS)
     time.sleep(0.01)
 
-    # Warm-up a couple readings (some boards need this)
+    # Bring up Front only
+    xshut3.value = True
+    time.sleep(0.01)
+    try:
+        lox3 = VL53L0X(i2c)  # at 0x29 (front was in reset)
+    except Exception as e:
+        print("Failed to boot third VL53L0X (Front):", e)
+        raise SystemExit(1)
+    time.sleep(0.01)
+    lox3.set_address(LOX3_ADDRESS)
+    time.sleep(0.01)
+
+    # Warm-up a couple readings
     for _ in range(2):
         _ = safe_read_sensor(lox1)
         _ = safe_read_sensor(lox2)
+        _ = safe_read_sensor(lox3)
         time.sleep(0.05)
 
 def millis() -> int:
@@ -139,24 +143,35 @@ def millis() -> int:
 
 def safe_read_sensor(sensor: VL53L0X) -> Measurement:
     """
-    Read a single measurement and emulate RangeStatus:
-      - 0: OK when a finite, positive range is returned
-      - 4: OOR if an exception occurs or an implausible value is returned
-    CircuitPython driver does not expose the full status codes; this mirrors
-    your logic paths without changing printed behavior or decisions.
+    Emulate RangeStatus:
+      - 0: OK (finite, plausible)
+      - 4: OOR / failure
     """
     try:
-        # .range returns millimeters (int). Typical OOR can be large or 0.
         mm = int(sensor.range)
-        if 20 <= mm <= 4000:   # typical usable envelope; adjust if needed
+        if 20 <= mm <= 4000:
             return Measurement(mm=mm, status=0)
         else:
             return Measurement(mm=mm, status=4)
     except Exception:
         return Measurement(mm=0, status=4)
 
+def sign_to_decision(v: float, soft_thresh: float, hard_thresh: float) -> int:
+    """
+    Map a signed value to {-2,-1,0,+1,+2} given soft/hard thresholds on |v|.
+    """
+    if v <= -hard_thresh:
+        return -2
+    if v >=  hard_thresh:
+        return +2
+    if v <= -soft_thresh:
+        return -1
+    if v >=  soft_thresh:
+        return +1
+    return 0
+
 def read_dual_sensors():
-    global lastSampleMs, havePrevPair, prevPairR, prevPairL, diffFilt
+    global lastSampleMs, havePrevPair, prevPairR, prevPairL, diffFilt, frontFilt
 
     # sample timing
     now = millis()
@@ -165,85 +180,116 @@ def read_dual_sensors():
     dt_ms = now - lastSampleMs if lastSampleMs != 0 else SAMPLE_PERIOD_MS
     lastSampleMs = now
 
-    # read both sensors
+    # read sensors
     m1 = safe_read_sensor(lox1)  # Right
     m2 = safe_read_sensor(lox2)  # Left
+    mF = safe_read_sensor(lox3)  # Front
 
-    # ---- print raw readings (present = not real OOR) ----
-    print("1: ", end="")
-    if present(m1):
-        print(f"{m1.RangeMilliMeter}", end="")
-    else:
-        print("Out of range", end="")
+    # -------- SIDE DECISION (unchanged logic) --------
+    decision = 0  # -2..+2
+    absDiff = 0.0
 
-    print("  2: ", end="")
-    if present(m2):
-        print(f"{m2.RangeMilliMeter}", end="")
-    else:
-        print("Out of range", end="")
-
-    # ---- compute control whenever both are present (highest priority: state) ----
     if present(m1) and present(m2):
         currR = int(m1.RangeMilliMeter)
         currL = int(m2.RangeMilliMeter)
-        currDiff = currR - currL  # raw diff (mm)
+        currDiff = currR - currL  # mm
+
+        if not hasattr(read_dual_sensors, "latchedDecision"):
+            read_dual_sensors.latchedDecision = 0
 
         if not havePrevPair:
             havePrevPair = True
             prevPairR = currR
             prevPairL = currL
             diffFilt = float(currDiff)  # init EMA
-            print("  |  sDiff: N/A (priming)", end="")
         else:
-            # EMA low-pass on diff before differentiating
             prevFilt = diffFilt
             diffRaw = float(currDiff)
             if math.isnan(diffFilt):
                 diffFilt = diffRaw
             diffFilt = ALPHA * diffRaw + (1.0 - ALPHA) * diffFilt
 
-            # derivative of filtered diff → mm/s
             sDiff = (diffFilt - prevFilt) * (1000.0 / float(dt_ms))
+            absDiff = abs(diffFilt)
 
-            # --- telemetry ---
-            print(f"  |  diffFilt: {diffFilt:.1f}  sDiff: {sDiff:.1f} mm/s  |  ", end="")
+            # slope-based quick onset
+            d_slope = sign_to_decision(sDiff, SLOPE_THRESH_MMPS, SLOPE_HARD_MMPS)
 
-            # --- instantaneous state (always printed) ---
-            if   sDiff < -1000: d = -2
-            elif sDiff >  1000: d = +2
-            elif sDiff <=  -60: d = -1
-            elif sDiff >=   60: d = +1
-            else:               d = 0
+            # position-based with hysteresis
+            d_pos_raw = sign_to_decision(diffFilt, DIFF_ON_MM, DIFF_HARD_MM)
+            if absDiff >= DIFF_ON_MM:
+                d_pos = d_pos_raw
+            elif absDiff <= DIFF_OFF_MM:
+                d_pos = 0
+            else:
+                d_pos = read_dual_sensors.latchedDecision
 
-            label = ("HARD LEFT" if d == -2 else
-                     "LEFT"       if d == -1 else
-                     "STRAIGHT"   if d ==  0 else
-                     "RIGHT"      if d == +1 else
-                     "HARD RIGHT")
-            print(f"state: {label}  |  ", end="")
+            # safer combination (prefer position; slope only near center and not reversing)
+            slope_ok = d_slope if absDiff < DIFF_ON_MM else 0
+            if slope_ok != 0 and (sDiff * diffFilt) < 0:
+                slope_ok = 0
 
-            # --- debounced announcement (prints only when stable) ---
-            updateDirectionDebounced(sDiff)
+            decision = d_pos if d_pos != 0 else slope_ok
 
-            # If not strictly valid, show why—but AFTER state so state is never hidden
-            if not (validStrict(m1) and validStrict(m2)):
-                print(f"[warn status R={m1.RangeStatus} L={m2.RangeStatus}]", end="")
+            # latch
+            if decision != 0:
+                read_dual_sensors.latchedDecision = decision
+            else:
+                if absDiff <= DIFF_OFF_MM:
+                    read_dual_sensors.latchedDecision = 0
 
         prevPairR = currR
         prevPairL = currL
     else:
-        # At least one is truly OOR; we can't compute direction this cycle
-        print("  |  state: UNKNOWN (one sensor OOR)", end="")
-        print(f"  |  status R={m1.RangeStatus} L={m2.RangeStatus}", end="")
+        # keep decision as-is (0) if we can't compute this cycle
+        pass
 
-    print()  # newline
+    # -------- FRONT SPEED + ESCALATION --------
+    speed_label = "NORMAL"
+    if present(mF):
+        prevFront = frontFilt
+        frontRaw = float(mF.RangeMilliMeter)
+        if math.isnan(frontFilt):
+            frontFilt = frontRaw
+            sFront = 0.0
+        else:
+            frontFilt = ALPHA * frontRaw + (1.0 - ALPHA) * frontFilt
+            sFront = (frontFilt - prevFront) * (1000.0 / float(dt_ms))
+
+        if sFront <= -SLOPE_THRESH_MMPS:
+            speed_label = "SLOW"
+        else:
+            speed_label = "NORMAL"
+
+        # escalation rule: rapidly decreasing & close
+        if (sFront <= -SLOPE_HARD_MMPS) and (frontFilt < 430.0):
+            if decision == -1:
+                decision = -2
+            elif decision == +1:
+                decision = +2
+            elif decision == 0:
+                if not math.isnan(diffFilt):
+                    decision = +2 if diffFilt >= 0 else -2
+            if decision != 0:
+                updateDirectionDebounced(decision)
+    else:
+        # front OOR -> keep last speed decision (defaults to NORMAL)
+        pass
+
+    # -------- SINGLE LINE OUTPUT --------
+    # If both side sensors are OOR, call it UNKNOWN so you see it.
+    if not (present(m1) and present(m2)):
+        label = "UNKNOWN"
+    else:
+        label = ("HARD LEFT" if decision == -2 else
+                 "LEFT"       if decision == -1 else
+                 "STRAIGHT"   if decision ==  0 else
+                 "RIGHT"      if decision == +1 else
+                 "HARD RIGHT")
+    print(f"state: {label} | speed: {speed_label}")
 
 def main():
     print("Starting...")
-    # Ensure I2C bus is ready before toggling XSHUTs
-    # (bus created above)
-
-    # Bring up and readdress sensors
     setID()
 
     global lastSampleMs
@@ -251,7 +297,7 @@ def main():
 
     while True:
         read_dual_sensors()
-        # No explicit sleep; sampling period enforced inside
+        # Sampling period enforced inside
 
 if __name__ == "__main__":
     try:
