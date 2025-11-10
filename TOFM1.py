@@ -47,9 +47,9 @@ SLOW_SCALE = 0.60        # front slow-down multiplier when approaching
 # Centering controller (PD on (R-L))
 Kp_ERR         = 0.45
 Kd_DERR        = 0.25
-ERR_NORM_MM    = 120.0
-DERR_NORM_MMPS = 400.0
-MAX_REDUCTION  = 0.85
+ERR_NORM_MM    = 120.0   # mm -> full-scale for proportional term
+DERR_NORM_MMPS = 400.0   # mm/s -> full-scale for derivative term
+MAX_REDUCTION  = 0.85    # max inside-wheel reduction fraction (0..1)
 
 # Tight-arc 90° turn (timed) – keep at 25% overall
 TURN_OUTER_PWM   = 64
@@ -152,26 +152,12 @@ frontFilt = float("nan")
 prevFrontFilt = float("nan")
 
 # -------- Corner/Collision thresholds --------
-FRONT_FAST_MMPS   = -900.0   # very fast approach
-FRONT_CREEP_MM    = 500.0    # begin creep/probe when closer than this
-FRONT_HARD_STOP_MM= 260.0    # never drive forward closer than this
-FRONT_CREEP_PWM   = 28       # very low crawl while probing
-SIDE_BIG_MM       = 1200.0   # a side suddenly “far/open”
-CREEP_TIMEOUT_MS  = 900      # after arming, commit a turn if no open side
-
-# ---- Timed turn state ----
-def _init_turn_state():
-    read_dual_sensors.turn_active = False
-    read_dual_sensors.turn_end_ms = 0
-    read_dual_sensors.turn_dir = 0  # -1 = LEFT, +1 = RIGHT
-_init_turn_state()
-
-# ---- Corner arming state ----
-def _init_corner_state():
-    read_dual_sensors.corner_armed = False
-    read_dual_sensors.corner_armed_ms = 0
-    read_dual_sensors.last_turn_hint = 0   # -1 L, +1 R
-_init_corner_state()
+FRONT_FAST_MMPS    = -900.0  # very fast approach
+FRONT_CREEP_MM     = 500.0   # begin creep/probe when closer than this
+FRONT_HARD_STOP_MM = 260.0   # never drive forward closer than this
+FRONT_CREEP_PWM    = 28      # very low crawl while probing
+SIDE_BIG_MM        = 1200.0  # a side suddenly “far/open”
+CREEP_TIMEOUT_MS   = 900     # after arming, commit a turn if no open side
 
 # ---- main sensing/decision loop (ONLY emits SET_VEL with PWM) ----
 def read_dual_sensors():
@@ -229,8 +215,13 @@ def read_dual_sensors():
     # ------------------------------
     if read_dual_sensors.turn_active:
         if now >= read_dual_sensors.turn_end_ms:
-            _init_turn_state()
-            _init_corner_state()
+            # clear both turn and corner states
+            read_dual_sensors.turn_active = False
+            read_dual_sensors.turn_end_ms = 0
+            read_dual_sensors.turn_dir = 0
+            read_dual_sensors.corner_armed = False
+            read_dual_sensors.corner_armed_ms = 0
+            read_dual_sensors.last_turn_hint = 0
         else:
             outer = TURN_OUTER_PWM
             inner = max(0, min(255, int(round(outer * TURN_INNER_SCALE))))
@@ -243,7 +234,7 @@ def read_dual_sensors():
     # ----------------------------------------------------
     # Corner arming: creep & probe, stop, then commit turn
     # ----------------------------------------------------
-    # Decide if we should arm the corner behavior
+    # Arm corner behavior if approaching fast and within creep zone
     if front_present and (sFront <= FRONT_FAST_MMPS) and (frontFilt <= FRONT_CREEP_MM):
         if not read_dual_sensors.corner_armed:
             read_dual_sensors.corner_armed = True
@@ -256,7 +247,6 @@ def read_dual_sensors():
     if read_dual_sensors.corner_armed:
         # If dangerously close, STOP and commit immediately
         if front_present and frontFilt <= FRONT_HARD_STOP_MM:
-            # pick direction: open side first, else hint
             right_open = (not present(mR)) or (present(mR) and mR.RangeMilliMeter >= SIDE_BIG_MM)
             left_open  = (not present(mL)) or (present(mL) and mL.RangeMilliMeter >= SIDE_BIG_MM)
             if right_open and not left_open:
@@ -268,8 +258,7 @@ def read_dual_sensors():
             else:
                 dir_sel = (read_dual_sensors.last_turn_hint or (+1 if (err_present and diffFilt >= 0) else -1))
 
-            # hard stop (no more forward) and start the arc
-            send_set_vel_pwm(0, 0)
+            send_set_vel_pwm(0, 0)  # hard stop
             read_dual_sensors.turn_active = True
             read_dual_sensors.turn_end_ms = now + TURN_MS_90
             read_dual_sensors.turn_dir = dir_sel
@@ -283,7 +272,6 @@ def read_dual_sensors():
             read_dual_sensors.turn_active = True
             read_dual_sensors.turn_end_ms = now + TURN_MS_90
             read_dual_sensors.turn_dir = dir_sel
-            # start immediately at 25% arc
             outer = TURN_OUTER_PWM
             inner = max(0, min(255, int(round(outer * TURN_INNER_SCALE))))
             if dir_sel > 0:
@@ -319,7 +307,7 @@ def read_dual_sensors():
         return
 
     # =========================================================
-    # Normal: Centering PD (no discrete decisions, no reversing)
+    # Normal: Centering PD (no reversing) at 25% speed
     # =========================================================
     speed_scale = 1.0
     if front_present and sFront < 0:
@@ -329,7 +317,7 @@ def read_dual_sensors():
     # Safety: never drive forward inside hard-stop
     if front_present and frontFilt <= FRONT_HARD_STOP_MM:
         send_set_vel_pwm(0, 0)
-        # arm for next loop so we will commit a turn
+        # arm for next loop so we will commit a turn promptly
         if not read_dual_sensors.corner_armed:
             read_dual_sensors.corner_armed = True
             read_dual_sensors.corner_armed_ms = now
@@ -361,6 +349,15 @@ def main():
 
     while True:
         read_dual_sensors()
+
+# ---- initialize per-callable state AFTER the function is defined ----
+read_dual_sensors.turn_active = False
+read_dual_sensors.turn_end_ms = 0
+read_dual_sensors.turn_dir = 0      # -1 = LEFT, +1 = RIGHT
+
+read_dual_sensors.corner_armed = False
+read_dual_sensors.corner_armed_ms = 0
+read_dual_sensors.last_turn_hint = 0  # -1 L, +1 R
 
 if __name__ == "__main__":
     try:
