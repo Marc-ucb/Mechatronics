@@ -56,10 +56,10 @@ LOX3_ADDRESS = 0x32   # Front1
 LOX4_ADDRESS = 0x33   # Front2
 
 # -------- XSHUT pins (choose your actual GPIOs) --------
-SHT_LOX1_PIN = board.D7   # Right XSHUT
-SHT_LOX2_PIN = board.D6   # Left  XSHUT
-SHT_LOX3_PIN = board.D5   # Front1 XSHUT
-SHT_LOX4_PIN = board.D4   # Front2 XSHUT
+SHT_LOX1_PIN = board.D29   # Right XSHUT
+SHT_LOX2_PIN = board.D11   # Left  XSHUT
+SHT_LOX3_PIN = board.D31  # Front1 XSHUT
+SHT_LOX4_PIN = board.D13   # Front2 XSHUT
 
 # -------- Measurement struct analog --------
 class Measurement:
