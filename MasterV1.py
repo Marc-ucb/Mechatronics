@@ -223,6 +223,7 @@ def robotState(state: int, l, r):
             # even motor commands
             send_set_vel_pwm(steady,steady)
             state_history(2)
+            print("straight")
 
         case 3:
             # Left slope
@@ -232,6 +233,7 @@ def robotState(state: int, l, r):
             # left motor decrease by half
             send_set_vel_pwm(255 - quarter, steady)
             state_history(3)
+            print("Left slope")
 
         case 4:
             # Right slope
@@ -241,6 +243,7 @@ def robotState(state: int, l, r):
             # right motor decrease by half
             send_set_vel_pwm(steady, 255 - quarter)
             state_history(4)
+            print("Right slope")
 
         case 5:
             # Adjust right
@@ -256,6 +259,7 @@ def robotState(state: int, l, r):
             time.sleep(0.25)
             send_set_vel_pwm(steady, steady)
             state_history(5)
+            print("Adjust right")
 
         case 6:
             # Adjust left
@@ -271,6 +275,7 @@ def robotState(state: int, l, r):
             time.sleep(0.25)
             send_set_vel_pwm(steady, steady)
             state_history(6)
+            print("Adjust left")
 
         case 7:
             # Right90
@@ -290,6 +295,7 @@ def robotState(state: int, l, r):
             time.sleep(0.01)
             send_set_vel_pwm(steady, steady)
             state_history(7)
+            print("Right 90 turn")
 
         case 8:
             # Left90
@@ -309,6 +315,7 @@ def robotState(state: int, l, r):
             time.sleep(0.01)
             send_set_vel_pwm(steady, steady)
             state_history(8)
+            print("Left 90 turn")
 
         case 9:
             # Obstacle: fr > 400 or OOR, fl < 400
@@ -573,6 +580,11 @@ def driving():
         fL = medfilt(arrL, kernel_size=3)[-1]
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
+
+        print("Front right sensor: ", fR)
+        print("Front left sensor: ", fL)
+        print("Front front sensor: ", fFR)
+        print("Front left sensor: ", fFL)
 
         # decision logic
         interpret_data(fR, fL, fFR, fFL)
