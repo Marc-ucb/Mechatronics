@@ -215,8 +215,9 @@ def robotState(state: int, l, r):
             # forward half the distance of r
             # 90 degree right
             # analyze
+            send_set_vel_pwm(0,0)
             state_history(1)
-            pass
+
 
         case 2:
             # Straight
@@ -431,19 +432,19 @@ def interpret_data(r, l, fr, fl):
     # fl = front-left   (mm or 9000 for OOR)
 
     # Right & left roughly equal (within 100mm)
-    sides_equal = (r != 9000 and l != 9000 and abs(r - l) <= 100)
+    sides_equal = (r != 9000 and l != 9000 and abs(r - l) <= 150)
 
     # Front roughly equal (within 100mm)
-    fronts_equal = ((fr != 9000 and fl != 9000 and abs(fr - fl) <= 150) or (fr == 9000 and fl == 9000))
+    fronts_equal = ((fr != 9000 and fl != 9000 and abs(fr - fl) <= 300) or (fr == 9000 and fl == 9000))
 
     # Front both > 400mm
     fronts_far = ((fr == 9000 or fr > 400) and (fl == 9000 or fl > 400))
 
     # Front both < 400mm
-    fronts_near = ((fr != 9000 and fr < 400) and (fl != 9000 and fl < 400))
+    fronts_near = ((fr != 9000 and fr < 150) and (fl != 9000 and fl < 150))
 
     # Front Slant
-    slant = ((fr != 9000 and fl != 9000) and abs(fr - fl) >= 150)
+    slant = ((fr != 9000 and fl != 9000) and abs(fr - fl) >= 300)
 
     # ------------------------------------------------------------------
     # right and left sensors roughly equal (within 100mm)
