@@ -584,8 +584,8 @@ def driving():
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
-        print("Front right sensor: ", fR)
-        print("Front left sensor: ", fL)
+        print("right sensor: ", fR)
+        print("left sensor: ", fL)
         print("Front front sensor: ", fFR)
         print("Front left sensor: ", fFL)
 
