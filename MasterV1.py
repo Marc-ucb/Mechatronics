@@ -187,9 +187,9 @@ def send_servo_pos():
 
 # state of machine --> motor commands   In loop or out of loop?
 def robotState(state: int, l, r):
-    steady = 255
-    half = 255/2
-    quarter = 255/4
+    steady = 255/2
+    half = 255/4
+    quarter = 255/6
 
     match state:
         case 1:
@@ -232,7 +232,7 @@ def robotState(state: int, l, r):
 
             # right motor same speed
             # left motor decrease by half
-            send_set_vel_pwm(255 - quarter, steady)
+            send_set_vel_pwm(255 - half, steady)
             state_history(3)
             print("Left slope")
 
@@ -242,7 +242,7 @@ def robotState(state: int, l, r):
 
             # left motor same speed
             # right motor decrease by half
-            send_set_vel_pwm(steady, 255 - quarter)
+            send_set_vel_pwm(steady, 255 - half)
             state_history(4)
             print("Right slope")
 
@@ -254,9 +254,9 @@ def robotState(state: int, l, r):
             # right motor decrease by 1/4
             # left motor decrease by half
             # both motors stable
-            send_set_vel_pwm(steady, 255 - quarter)
+            send_set_vel_pwm(steady, 255 - half)
             time.sleep(0.25)
-            send_set_vel_pwm(255 - half, 255 - quarter)
+            send_set_vel_pwm(255 - (half + quarter), 255 - half)
             time.sleep(0.25)
             send_set_vel_pwm(steady, steady)
             state_history(5)
@@ -270,9 +270,9 @@ def robotState(state: int, l, r):
             # left motor decrease by 1/4
             # right motor decrease by half
             # both motors stable
-            send_set_vel_pwm(255 - quarter, steady)
+            send_set_vel_pwm(255 - half, steady)
             time.sleep(0.25)
-            send_set_vel_pwm(255 - quarter, 255 - half)
+            send_set_vel_pwm(255 - half, 255 - (half + quarter))
             time.sleep(0.25)
             send_set_vel_pwm(steady, steady)
             state_history(6)
@@ -451,7 +451,7 @@ def interpret_data(r, l, fr, fl):
     # ------------------------------------------------------------------
     # right and left sensors roughly equal (within 100mm)
     # front sensors roughly equal and < 400mm
-    if sides_equal and fronts_equal and (fr < 150 and fl < 150):
+    if sides_equal and fronts_equal and (fr < 250 and fl < 250):
         # Stop - Obstacle
         # state = Obstacle
         robotState(1, l, r)
