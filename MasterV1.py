@@ -284,8 +284,10 @@ def robotState(state: int, l, r):
             time.sleep(0.01)
             send_set_vel_pwm(0, 0)
             time.sleep(0.01)
-            send_set_vel_pwm(-10, steady) #arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
+            send_set_vel_pwm(-steady, steady) #arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
             time.sleep(.25) # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(0, 0)
+            time.sleep(0.01)
             send_set_vel_pwm(steady, steady)
             state_history(7)
 
@@ -301,8 +303,10 @@ def robotState(state: int, l, r):
             time.sleep(0.01)
             send_set_vel_pwm(0, 0)
             time.sleep(0.01)
-            send_set_vel_pwm(steady,-10)  # arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
+            send_set_vel_pwm(steady,-steady)  # arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
             time.sleep(.25)  # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(0,0)
+            time.sleep(0.01)
             send_set_vel_pwm(steady, steady)
             state_history(8)
 
