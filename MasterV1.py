@@ -320,11 +320,13 @@ def robotState(state: int, l, r):
 
         case 9:
             # Obstacle: fr > 400 or OOR, fl < 400
+            send_set_vel_pwm(half, half)
             state_history(9)
             pass
 
         case 10:
             # Obstacle: fl > 400 or OOR, fr < 400
+            send_set_vel_pwm(half, half)
             state_history(10)
             pass
 
@@ -441,7 +443,7 @@ def interpret_data(r, l, fr, fl):
     fronts_far = ((fr == 9000 or fr > 400) and (fl == 9000 or fl > 400))
 
     # Front both < 400mm
-    fronts_near = ((fr != 9000 and fr < 150) and (fl != 9000 and fl < 150))
+    fronts_near = ((fr != 9000 and fr < 400) and (fl != 9000 and fl < 400))
 
     # Front Slant
     slant = ((fr != 9000 and fl != 9000) and abs(fr - fl) >= 300)
@@ -449,7 +451,7 @@ def interpret_data(r, l, fr, fl):
     # ------------------------------------------------------------------
     # right and left sensors roughly equal (within 100mm)
     # front sensors roughly equal and < 400mm
-    if sides_equal and fronts_equal and fronts_near:
+    if sides_equal and fronts_equal and (fr < 150 and fl < 150):
         # Stop - Obstacle
         # state = Obstacle
         robotState(1, l, r)
