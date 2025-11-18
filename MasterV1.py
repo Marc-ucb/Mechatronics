@@ -145,10 +145,10 @@ full_Speed = 1
 half_Speed = 0.5
 quarter_Speed = 0.25
 three_Quarter_Speed = 0.75
-slow_Speed = 0.1
+
 
 def send_set_vel_pwm(left_pwm, right_pwm):
-    speed = quarter_Speed
+    speed = half_Speed
     L = round(left_pwm*speed)
     R = round(right_pwm*speed)
     _send_line(f"SET_VEL L={L} R={R}")
@@ -187,9 +187,9 @@ def send_servo_pos():
 
 # state of machine --> motor commands   In loop or out of loop?
 def robotState(state: int, l, r):
-    steady = 255/2
-    half = 255/4
-    quarter = 255/6
+    steady = 255
+    half = 255/2
+    quarter = 255/4
 
     match state:
         case 1:
@@ -216,6 +216,9 @@ def robotState(state: int, l, r):
             # 90 degree right
             # analyze
             send_set_vel_pwm(0,0)
+            time.sleep(0.1)
+            send_set_vel_pwm(-half, -half)
+            time.sleep(1.5)
             state_history(1)
 
 
@@ -232,7 +235,7 @@ def robotState(state: int, l, r):
 
             # right motor same speed
             # left motor decrease by half
-            send_set_vel_pwm(255 - half, steady)
+            send_set_vel_pwm(quarter, steady)
             state_history(3)
             print("Left slope")
 
@@ -242,7 +245,7 @@ def robotState(state: int, l, r):
 
             # left motor same speed
             # right motor decrease by half
-            send_set_vel_pwm(steady, 255 - half)
+            send_set_vel_pwm(steady, quarter)
             state_history(4)
             print("Right slope")
 
@@ -254,10 +257,10 @@ def robotState(state: int, l, r):
             # right motor decrease by 1/4
             # left motor decrease by half
             # both motors stable
-            send_set_vel_pwm(steady, 255 - half)
-            time.sleep(0.25)
-            send_set_vel_pwm(255 - (half + quarter), 255 - half)
-            time.sleep(0.25)
+            send_set_vel_pwm(steady, quarter)
+            time.sleep(0.75)
+            send_set_vel_pwm(quarter, steady)
+            time.sleep(0.75)
             send_set_vel_pwm(steady, steady)
             state_history(5)
             print("Adjust right")
@@ -270,10 +273,10 @@ def robotState(state: int, l, r):
             # left motor decrease by 1/4
             # right motor decrease by half
             # both motors stable
-            send_set_vel_pwm(255 - half, steady)
-            time.sleep(0.25)
-            send_set_vel_pwm(255 - half, 255 - (half + quarter))
-            time.sleep(0.25)
+            send_set_vel_pwm(quarter, steady)
+            time.sleep(0.75)
+            send_set_vel_pwm(steady, quarter)
+            time.sleep(0.75)
             send_set_vel_pwm(steady, steady)
             state_history(6)
             print("Adjust left")
@@ -287,13 +290,13 @@ def robotState(state: int, l, r):
             # left motor pulse backwards
             # both motors forward
             send_set_vel_pwm(half, half)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(0, 0)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(-steady, steady) #arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
             time.sleep(1.5) # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0, 0)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(steady, steady)
             state_history(7)
             print("Right 90 turn")
@@ -307,13 +310,13 @@ def robotState(state: int, l, r):
             # right motor pulse backwards
             # both motors forward
             send_set_vel_pwm(half, half)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(0, 0)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(steady,-steady)  # arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
             time.sleep(1.5)  # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0,0)
-            time.sleep(0.01)
+            time.sleep(0.1)
             send_set_vel_pwm(steady, steady)
             state_history(8)
             print("Left 90 turn")
@@ -451,14 +454,14 @@ def interpret_data(r, l, fr, fl):
     # ------------------------------------------------------------------
     # right and left sensors roughly equal (within 100mm)
     # front sensors roughly equal and < 400mm
-    if sides_equal and fronts_equal and (fr < 250 and fl < 250):
+    #if sides_equal and fronts_equal and (fr < 250 and fl < 250):
         # Stop - Obstacle
         # state = Obstacle
-        robotState(1, l, r)
+        #robotState(1, l, r)
 
     # right and left sensors roughly equal (within 100mm)
     # front sensors not equal and < 400mm
-    elif sides_equal and ((fr > 400 or fr == 9000) and fl < 400):
+    if sides_equal and ((fr > 400 or fr == 9000) and fl < 400):
          # Stop - Obstacle
         # state = Obstacle
          robotState(9, l, r)
@@ -589,10 +592,88 @@ def driving():
         print("Front front sensor: ", fFR)
         print("Front left sensor: ", fFL)
 
+        if fFR or fFL < 300:
+            robotState(1, fR, fL)
+
         # decision logic
         interpret_data(fR, fL, fFR, fFL)
 
+#===========================================================================================================
+# MOTOR TEST SEQUENCE
+#==========================================================================================================
+def motor_test_sequence():
+    """
+    Simple motor test that ignores all sensors and just exercises the robotState
+    commands in a fixed sequence:
 
+      1) Straight for 3 seconds
+      2) Adjust right
+      3) Adjust left
+      4) Slope right for 3 seconds
+      5) Slope left for 3 seconds
+      6) 90 degree right
+      7) 90 degree left
+      8) Stop
+    """
+    print("\n[TEST] speed values slowly increasing")
+    send_set_vel_pwm(25,25)
+    time.sleep(2)
+    send_set_vel_pwm(50, 50)
+    time.sleep(2)
+    send_set_vel_pwm(75, 75)
+    time.sleep(2)
+    send_set_vel_pwm(100, 100)
+    time.sleep(2)
+    send_set_vel_pwm(125, 125)
+    time.sleep(2)
+    send_set_vel_pwm(150, 150)
+    time.sleep(2)
+    send_set_vel_pwm(175, 175)
+    time.sleep(2)
+    send_set_vel_pwm(200, 200)
+    time.sleep(2)
+    send_set_vel_pwm(225, 225)
+    time.sleep(2)
+    send_set_vel_pwm(250, 250)
+    time.sleep(2)
+    send_set_vel_pwm(255, 255)
+    time.sleep(10)
+
+    print("\n[TEST] Straight for 3 seconds")
+    robotState(2, 0, 0)     # straight
+    time.sleep(3.0)
+
+    print("\n[TEST] Adjust right (tighten to the right wall)")
+    robotState(5, 0, 0)     # adjust right (has its own internal sleeps)
+    time.sleep(1.0)
+
+    print("\n[TEST] Adjust left (tighten to the left wall)")
+    robotState(6, 0, 0)     # adjust left (has its own internal sleeps)
+    time.sleep(1.0)
+
+    print("\n[TEST] Slope right for 3 seconds")
+    robotState(4, 0, 0)     # right slope: left steady, right slower
+    time.sleep(3.0)
+
+    print("\n[TEST] Slope left for 3 seconds")
+    robotState(3, 0, 0)     # left slope: right steady, left slower
+    time.sleep(3.0)
+
+    print("\n[TEST] 90 degree right turn")
+    robotState(7, 0, 0)     # right 90 (includes its own timing)
+    time.sleep(1.0)
+
+    print("\n[TEST] 90 degree left turn")
+    robotState(8, 0, 0)     # left 90 (includes its own timing)
+    time.sleep(1.0)
+
+    print("\n[TEST] Stop")
+    send_set_vel_pwm(64,64)
+    time.sleep(0.1)
+    send_set_vel_pwm(0, 0)
+    time.sleep(1.0)
+
+    print("\n[TEST] Motor test sequence complete.")
 # ==========================================================================================================
 # Main =====================================================================================================
 # ==========================================================================================================
@@ -603,7 +684,8 @@ def main():
         print("Exiting due to sensor initialization failure.")
         return
     time.sleep(10)
-    driving()
+    #driving()
+    motor_test_sequence()
 
 
 if __name__ == "__main__":
