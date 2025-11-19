@@ -362,6 +362,8 @@ def driving():
 
     time.sleep(0.1) # delay for readings to begin giving data
 
+    arrR, arrL, arrFR, arrFL = [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
+
     while True:
         # call backup IR
             # If emergency stop detected -- robotState(1)
@@ -370,23 +372,21 @@ def driving():
             # Decide code -- correct robot state
 
         # read raw sensor data / collect 3 readings per sensor in array
-        arrR, arrL, arrFR, arrFL = [], [], [], []
 
-        for _ in range(3):
-            mR = lox1.range  # Right ~20ms
-            mL = lox2.range  # Left ~20ms
-            mFR = lox3.range  # Front1 ~20ms
-            mFL = lox4.range  # Front2 ~20ms
+        mR = lox1.range  # Right ~20ms
+        mL = lox2.range  # Left ~20ms
+        mFR = lox3.range  # Front1 ~20ms
+        mFL = lox4.range  # Front2 ~20ms
 
-            if mFR < 200 or mFL < 200 or mR < 80 or mL < 80:   # ===========  EMERGENCY STOP CONDITIONS  ============
-                robotState(1)
-                # E_stop = True
+        if mFR < 200 or mFL < 200 or mR < 80 or mL < 80:   # ===========  EMERGENCY STOP CONDITIONS  ============
+            robotState(1)
+            # E_stop = True
 
-            # append all readings, including OOR (9000)
-            arrR.append(mR)
-            arrL.append(mL)
-            arrFR.append(mFR)
-            arrFL.append(mFL)
+        # ----- sliding window of length 3 for each sensor -----
+        arrR.pop(0); arrR.append(mR)
+        arrL.pop(0); arrL.append(mL)
+        arrFR.pop(0); arrFR.append(mFR)
+        arrFL.pop(0); arrFL.append(mFL)
 
 
         # convert to NumPy arrays
