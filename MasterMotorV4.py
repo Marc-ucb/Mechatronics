@@ -1,24 +1,22 @@
 # -*- coding: utf-8 -*-
 import time
 import numpy as np
-import board
+import board  # Blinka pin names for Raspberry Pi
 import busio
 from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
 from scipy.signal import medfilt
-from pixy2 import Pixy2
 
 # ==========================================================================================================
 # General Setup ============================================================================================
 # ==========================================================================================================
 
+# E_Stop = False
+# ===== Arduino serial link (edit these) =====
 ARDUINO_PORT = "/dev/ttyACM0"
 ARDUINO_BAUD = 115200
 
-# Pixy2 Setup
-PIXY2_PORT = "/dev/ttyACM1"  # Adjust if Pixy2 is on different port
-pixy2 = None
-
+# Try to open serial; fall back to print-only if not available
 try:
     import serial
 
@@ -186,19 +184,11 @@ def send_servo_pos():
 
 
 # ==========================================================================================================
-# Robot State Machine (UNCHANGED) ==========================================================================
+# =============================== LOOP START ?? ============================================================
 # ==========================================================================================================
 
-previous_states = []
 
-
-def state_history(state: int):
-    previous_states.append(state)
-    if len(previous_states) > 10:
-        previous_states.pop(0)
-    print("History:", previous_states)
-
-
+# state of machine --> motor commands   In loop or out of loop?
 def robotState(state: int):
     full = 255
     half = 255 / 2
@@ -221,24 +211,38 @@ def robotState(state: int):
             state_history(1)
 
         case 2:
-            # Right90
+            # Right90 - turn until both front sensors > 600mm
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-full, full)
-            time.sleep(
-                .5)  # ===================== use this to dial 90 degree turns =====================================
+
+            # Keep turning until both front sensors see open space
+            while True:
+                fr = safe_read(lox3, "Front1")
+                fl = safe_read(lox4, "Front2")
+                if fr > 600 and fl > 600:
+                    break
+                time.sleep(0.01)
+
             send_set_vel_pwm(0, 0)
             send_set_vel_pwm(64, 64)
             state_history(2)
             print("Right 90 turn")
 
         case 3:
-            # Left90
+            # Left90 - turn until both front sensors > 600mm
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(full, -full)
-            time.sleep(
-                0.4)  # ===================== use this to dial 90 degree turns =====================================
+
+            # Keep turning until both front sensors see open space
+            while True:
+                fr = safe_read(lox3, "Front1")
+                fl = safe_read(lox4, "Front2")
+                if fr > 600 and fl > 600:
+                    break
+                time.sleep(0.01)
+
             send_set_vel_pwm(0, 0)
             send_set_vel_pwm(64, 64)
             state_history(3)
@@ -247,26 +251,31 @@ def robotState(state: int):
         case 4:
             # Bridge
             send_servo_raise(180)
+
             # motor commands
             # ===========================
             # LINE UP WITH OBSTACLE
             # ===========================
+
             send_servo_lower()
             state_history(4)
 
         case 5:
             # Ramp
             send_servo_raise(180)
+
             # motor commands
             # ===========================
             # LINE UP WITH OBSTACLE
             # ===========================
+
             send_servo_lower()
             state_history(5)
 
         case 6:
             # gravel
             send_servo_raise(180)
+
             # motor commands
             # ===========================
             # LINE UP WITH OBSTACLE
@@ -283,78 +292,42 @@ def robotState(state: int):
             state_history(6)
 
 
-# ==========================================================================================================
-# Pixy2 Code ===============================================================================================
-# ==========================================================================================================
-
-def init_pixy2():
-    """Initialize Pixy2 camera for line following."""
-    global pixy2
-    try:
-        pixy2 = Pixy2(port=PIXY2_PORT)
-        pixy2.set_lamp(1, 1)  # Turn on lamps
-        print("[OK] Pixy2 initialized")
-        return True
-    except Exception as e:
-        print(f"[WARN] Pixy2 not available: {e}")
-        pixy2 = None
-        return False
+previous_states = []
 
 
-def get_pixy_steering():
-    """
-    Read Pixy2 and return steering adjustment.
-    Returns: correction value to apply to motors, or None if no lines detected.
-
-    Positive correction = turn left (increase left motor, decrease right motor)
-    Negative correction = turn right
-    """
-    if pixy2 is None:
-        return None
-
-    try:
-        # Get line vectors from Pixy2
-        vectors = pixy2.get_main_features()
-
-        if not vectors or len(vectors) < 2:
-            return None
-
-        # Find left and right edge lines
-        line_xs = [(vec['x0'] + vec['x1']) / 2 for vec in vectors]
-        line_xs.sort()
-
-        left_edge = line_xs[0]
-        right_edge = line_xs[-1]
-
-        # Calculate track center and robot position
-        track_center = (left_edge + right_edge) / 2
-        robot_center = 79 / 2  # Pixy2 frame width / 2
-
-        # Error = how far off-center we are
-        error = track_center - robot_center
-
-        # Simple proportional control
-        correction = error * 2.5  # Adjust this gain as needed
-
-        return correction
-
-    except Exception as e:
-        print(f"[Pixy2 ERROR] {e}")
-        return None
+# history of states - no double 90 in the same direction
+def state_history(state: int):
+    previous_states.append(state)
+    if len(previous_states) > 10:
+        previous_states.pop(0)
+    print("History:", previous_states)
 
 
 # ==========================================================================================================
-# TOF Sensor Logic (UNCHANGED) =============================================================================
+# Backup IR  ===============================================================================================
 # ==========================================================================================================
 
+
+# ==========================================================================================================
+# Pixy Code  ===============================================================================================
+# ==========================================================================================================
+
+
+# =============================================================================================================
+# TOF Sensor Logic ============================================================================================
+# =============================================================================================================
 def reset_all_sensors():
     print("\n[RESET] Power-cycling ALL VL53L0X sensors...")
+
+    # Stop movement just in case
     send_set_vel_pwm(0, 0)
 
+    # Kill all sensors via XSHUT
     for x in (xshut1, xshut2, xshut3, xshut4):
         x.value = False
     time.sleep(0.1)
 
+    # Re-initialize using existing logic
     ok = setID()
 
     if ok:
@@ -368,26 +341,29 @@ def reset_all_sensors():
 def safe_read(sensor, name):
     try:
         return sensor.range
+
     except Exception as e:
         print(f"[I2C ERROR] {name}: {e} — resetting ALL sensors")
         reset_all_sensors()
-        return 9999
+        return 9999  # fail-safe distance
 
 
+# decision-making based on filtered sensor data
+# Interpret data / assign triggers
 def interpret_data(r, l, fr, fl):
-    """
-    Original TOF-based decision making, now with optional Pixy2 steering assist.
-    """
     full = 255
 
     # Front both < 200mm
     fronts_near = ((fr < 230) and (fl < 230))
 
     # Front Slant
-    slant = abs(fr - fl) >= 400
+    slant = abs(fr - fl) >= 400  # ======== Adjust slant values here =========
+
+    # ------------------------------------------------------------------
 
     # 90 degree turns
     if abs(r - l) > 200 and fronts_near:
+        # If last state was 2 (Right90) or 3 (Left90) → skip this block
         if previous_states and previous_states[-1] in (2, 3):
             return
 
@@ -399,40 +375,28 @@ def interpret_data(r, l, fr, fl):
             robotState(3)
             return
 
-    # Try Pixy2 steering first
-    pixy_correction = get_pixy_steering()
+    # keep robot straight
 
-    if pixy_correction is not None:
-        # Pixy2 is tracking both lines - use it for steering
-        base_speed = 150
-        left_speed = base_speed + pixy_correction
-        right_speed = base_speed - pixy_correction
-
-        # Constrain speeds
-        left_speed = max(50, min(200, left_speed))
-        right_speed = max(50, min(200, right_speed))
-
-        send_set_vel_pwm(int(left_speed), int(right_speed))
-        state_history(20)  # New state for Pixy2 steering
-        return
-
-    # Fallback to original TOF-based steering
-    if abs(r - l) >= 50 or slant:
+    if abs(r - l) >= 50 or slant:  # ======== Adjust turn values here ===========
         if r > l:
             send_set_vel_pwm(10, 200)
             state_history(10)
+
         elif r < l:
             send_set_vel_pwm(200, 10)
             state_history(11)
+
         elif fr > fl:
             send_set_vel_pwm(10, 200)
             state_history(12)
+
         elif fr < fl:
             send_set_vel_pwm(200, 10)
             state_history(13)
     else:
-        send_set_vel_pwm(150, 150)
+        send_set_vel_pwm(150, 150)  # ======= ADJUST STANDARD SPEED HERE ===============
         state_history(99)
+    # -------------------------------------------------------------------
 
 
 def driving():
@@ -440,34 +404,135 @@ def driving():
         s.measurement_timing_budget = 20000
         s.continuous_mode()
 
-    time.sleep(0.1)
+    time.sleep(0.1)  # delay for readings to begin giving data
 
     arrR, arrL, arrFR, arrFL = [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
 
     while True:
-        # Read raw sensor data
+        # call backup IR
+        # If emergency stop detected -- robotState(1)
+        # call pixy
+        # If Pixy sees QR code
+        # Decide code -- correct robot state
+
+        # read raw sensor data / collect 3 readings per sensor in array
+
         mR = safe_read(lox1, "Right")
         mL = safe_read(lox2, "Left")
         mFR = safe_read(lox3, "Front1")
         mFL = safe_read(lox4, "Front2")
 
-        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:
+        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:  # ===========  EMERGENCY STOP CONDITIONS  ============
             robotState(1)
+            # E_stop = True
 
-        # Sliding window
+        # ----- sliding window of length 3 for each sensor -----
+        np.delete(arrR, 0);
+        np.delete(arrL, 0);
+        np.delete(arrFR, 0);
+        np.delete(arrFL, 0);
+
+        # convert to NumPy arrays
         arrR = np.append(arrR[1:], mR)
         arrL = np.append(arrL[1:], mL)
         arrFR = np.append(arrFR[1:], mFR)
         arrFL = np.append(arrFL[1:], mFL)
 
-        # Median filter
+        # median filter over the 3 samples
         fR = medfilt(arrR, kernel_size=3)[-1]
         fL = medfilt(arrL, kernel_size=3)[-1]
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
-        # Decision logic (now with optional Pixy2)
+        # decision logic
         interpret_data(fR, fL, fFR, fFL)
+
+
+# ===========================================================================================================
+# MOTOR TEST SEQUENCE
+# ==========================================================================================================
+def motor_test_sequence():
+    """
+    Simple motor test that ignores all sensors and just exercises the robotState
+    commands in a fixed sequence:
+
+      1) Straight for 3 seconds
+      2) Adjust right
+      3) Adjust left
+      4) Slope right for 3 seconds
+      5) Slope left for 3 seconds
+      6) 90 degree right
+      7) 90 degree left
+      8) Stop
+    """
+
+    # print("\n[TEST] speed values slowly increasing")
+    # send_set_vel_pwm(25,25)
+    # time.sleep(2)
+    # $send_set_vel_pwm(50, 50)
+    # time.sleep(2)
+    # send_set_vel_pwm(75, 75)
+    # time.sleep(2)
+    # send_set_vel_pwm(100, 100)
+    # time.sleep(2)
+    send_set_vel_pwm(200, 200)
+    time.sleep(2)
+    # send_set_vel_pwm(150, 150)
+    # time.sleep(2)
+    # send_set_vel_pwm(175, 175)
+    # time.sleep(2)
+    # send_set_vel_pwm(200, 200)
+    # time.sleep(2)
+    # send_set_vel_pwm(225, 225)
+    # time.sleep(2)
+    # send_set_vel_pwm(250, 250)
+    # time.sleep(2)
+    # send_set_vel_pwm(255, 255)
+    # time.sleep(10)
+
+    # print("\n[TEST] Straight for 3 seconds")
+    # send_set_vel_pwm(100,100)
+    # time.sleep(1)
+    # send_set_vel_pwm(128,128)
+    # time.sleep(0.1)
+    # send_set_vel_pwm(255,255)     # straight
+    # time.sleep(1)
+
+    # print("\n[TEST] Obstacle")
+    # robotState(1)
+    # time.sleep(1.0)
+
+    # print("\n[TEST] 90 degree right turn")
+    # robotState(2)     # right 90 (includes its own timing)
+    # time.sleep(1.0)
+
+    # print("\n[TEST] 90 degree left turn")
+    # robotState(3)     # left 90 (includes its own timing)
+    # time.sleep(1.0)
+
+    # print("\n[TEST] Adjust right")
+    # send_set_vel_pwm(128, 255)  # motor commands for adjust right
+    # time.sleep(1.0)
+
+    # print("\n[TEST] Adjust left")
+    # send_set_vel_pwm(255, 75)  # motor commands for adjust left
+    # time.sleep(1.0)
+
+    # print("\n[TEST] slant right")
+    # send_set_vel_pwm(255, 10)  # motor commands for slant right
+    # time.sleep(1.0)
+
+    # print("\n[TEST] slant left")
+    # send_set_vel_pwm(10, 255)  # motor commands for slant left
+    # time.sleep(1.0)
+
+    print("\n[TEST] Stop")
+    send_set_vel_pwm(64, 64)
+    time.sleep(0.1)
+    send_set_vel_pwm(0, 0)
+    time.sleep(1.0)
+
+    print("\n[TEST] Motor test sequence complete.")
 
 
 # ==========================================================================================================
@@ -479,12 +544,9 @@ def main():
     if not ok:
         print("Exiting due to sensor initialization failure.")
         return
-
-    # Try to initialize Pixy2 (optional)
-    init_pixy2()
-
-    time.sleep(2)
+    time.sleep(20)
     driving()
+    # motor_test_sequence()
 
 
 if __name__ == "__main__":
@@ -492,4 +554,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nExiting.")
-        send_set_vel_pwm(0, 0)
