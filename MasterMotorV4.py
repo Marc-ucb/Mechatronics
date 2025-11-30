@@ -205,23 +205,32 @@ def robotState(state: int):
             time.sleep(0.1)
             send_set_vel_pwm(-100, -100)
             time.sleep(.5)
-            send_set_vel_pwm(100, 100)
-            time.sleep(0.1)
             send_set_vel_pwm(0, 0)
             state_history(1)
 
         case 2:
-            # Right90 - turn until both front sensors > 600mm
+            # Right90 - turn until outside (left) sensor shows second increase
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-full, full)
 
-            # Keep turning until both front sensors see open space
+            # Track outside sensor (left for right turn)
+            prev_reading = safe_read(lox2, "Left")
+            increasing = False
+
             while True:
-                fr = safe_read(lox3, "Front1")
-                fl = safe_read(lox4, "Front2")
-                if fr > 600 and fl > 600:
-                    break
+                current_reading = safe_read(lox2, "Left")
+
+                # Detect second increase (after corner dip)
+                if current_reading > prev_reading:
+                    if increasing:
+                        # Second increase detected - stop turn
+                        break
+                    increasing = True
+                else:
+                    increasing = False
+
+                prev_reading = current_reading
                 time.sleep(0.01)
 
             send_set_vel_pwm(0, 0)
@@ -230,17 +239,28 @@ def robotState(state: int):
             print("Right 90 turn")
 
         case 3:
-            # Left90 - turn until both front sensors > 600mm
+            # Left90 - turn until outside (right) sensor shows second increase
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(full, -full)
 
-            # Keep turning until both front sensors see open space
+            # Track outside sensor (right for left turn)
+            prev_reading = safe_read(lox1, "Right")
+            increasing = False
+
             while True:
-                fr = safe_read(lox3, "Front1")
-                fl = safe_read(lox4, "Front2")
-                if fr > 600 and fl > 600:
-                    break
+                current_reading = safe_read(lox1, "Right")
+
+                # Detect second increase (after corner dip)
+                if current_reading > prev_reading:
+                    if increasing:
+                        # Second increase detected - stop turn
+                        break
+                    increasing = True
+                else:
+                    increasing = False
+
+                prev_reading = current_reading
                 time.sleep(0.01)
 
             send_set_vel_pwm(0, 0)
@@ -362,7 +382,7 @@ def interpret_data(r, l, fr, fl):
     # ------------------------------------------------------------------
 
     # 90 degree turns
-    if abs(r - l) > 200 and fronts_near:
+    if abs(r - l) > 200:
         # If last state was 2 (Right90) or 3 (Left90) → skip this block
         if previous_states and previous_states[-1] in (2, 3):
             return
@@ -422,7 +442,7 @@ def driving():
         mFR = safe_read(lox3, "Front1")
         mFL = safe_read(lox4, "Front2")
 
-        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:  # ===========  EMERGENCY STOP CONDITIONS  ============
+        if mFR < 200 or mFL < 200 or mR < 30 or mL < 30:  # ===========  EMERGENCY STOP CONDITIONS  ============
             robotState(1)
             # E_stop = True
 
