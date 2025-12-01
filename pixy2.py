@@ -1,12 +1,32 @@
 # -*- coding: utf-8 -*-
 import time
 import numpy as np
-import board
+import board  # Blinka pin names for Raspberry Pi
 import busio
 from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
 from scipy.signal import medfilt
-from pixy2 import Pixy2
+import sys
+
+# ==========================================================================================================
+# Pixy2 Python module path + imports (USB via SWIG) ========================================================
+# ==========================================================================================================
+
+# Adjust this path if your pixy2 repo is in a different location
+sys.path.append("/home/pi/pixy2/build/python_demos")
+
+try:
+    import pixy
+    from pixy import BlockArray, VectorArray, line_get_main_features, line_get_vectors, get_frame_width
+    pixy_blocks = BlockArray(50)   # up to 50 blocks
+    pixy_vectors = VectorArray(10) # up to 10 line vectors
+    _pixy_available = True
+except Exception as _e:
+    print(f"[WARN] Pixy2 Python module not available: {_e}")
+    pixy = None
+    BlockArray = VectorArray = None
+    pixy_blocks = pixy_vectors = None
+    _pixy_available = False
 
 # ==========================================================================================================
 # General Setup ============================================================================================
@@ -15,10 +35,12 @@ from pixy2 import Pixy2
 ARDUINO_PORT = "/dev/ttyACM0"
 ARDUINO_BAUD = 115200
 
-# Pixy2 Setup
-PIXY2_PORT = "/dev/ttyACM1"  # Adjust if Pixy2 is on different port
-pixy2 = None
+# Pixy2 Color Signatures
+SIG_BLUE = 1   # Signature 1 = Blue
+SIG_ORANGE = 2 # Signature 2 = Orange
+SIG_PURPLE = 3 # Signature 3 = Purple
 
+# Try to open serial; fall back to print-only if not available
 try:
     import serial
 
@@ -49,22 +71,22 @@ LOX3_ADDRESS = 0x32  # Front1
 LOX4_ADDRESS = 0x33  # Front2
 
 # -------- XSHUT pins --------
-SHT_LOX1_PIN = board.D5  # Right XSHUT
+SHT_LOX1_PIN = board.D5   # Right XSHUT
 SHT_LOX2_PIN = board.D17  # Left  XSHUT
-SHT_LOX3_PIN = board.D6  # Front1 XSHUT
+SHT_LOX3_PIN = board.D6   # Front1 XSHUT
 SHT_LOX4_PIN = board.D27  # Front2 XSHUT
 
 # ---- hardware bring-up (VL53L0X) ----
 i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
 
 # XSHUT controls
-xshut1 = DigitalInOut(SHT_LOX1_PIN);
+xshut1 = DigitalInOut(SHT_LOX1_PIN)
 xshut1.direction = Direction.OUTPUT
-xshut2 = DigitalInOut(SHT_LOX2_PIN);
+xshut2 = DigitalInOut(SHT_LOX2_PIN)
 xshut2.direction = Direction.OUTPUT
-xshut3 = DigitalInOut(SHT_LOX3_PIN);
+xshut3 = DigitalInOut(SHT_LOX3_PIN)
 xshut3.direction = Direction.OUTPUT
-xshut4 = DigitalInOut(SHT_LOX4_PIN);
+xshut4 = DigitalInOut(SHT_LOX4_PIN)
 xshut4.direction = Direction.OUTPUT
 
 # Sensor objects
@@ -186,10 +208,15 @@ def send_servo_pos():
 
 
 # ==========================================================================================================
-# Robot State Machine (UNCHANGED) ==========================================================================
+# =============================== LOOP STATE / HISTORY =====================================================
 # ==========================================================================================================
 
 previous_states = []
+last_detected_color = None
+color_detection_timestamp = 0
+
+# For color-pair logic (separate from debouncing)
+prev_color_for_pair = None
 
 
 def state_history(state: int):
@@ -206,9 +233,6 @@ def robotState(state: int):
     match state:
         case 1:
             # Obstacle
-            # Stop
-            # Backup
-            # reassess
             send_set_vel_pwm(100, 100)
             time.sleep(0.1)
             send_set_vel_pwm(0, 0)
@@ -225,8 +249,7 @@ def robotState(state: int):
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-full, full)
-            time.sleep(
-                .5)  # ===================== use this to dial 90 degree turns =====================================
+            time.sleep(.5)  # dial 90 degree turns
             send_set_vel_pwm(0, 0)
             send_set_vel_pwm(64, 64)
             state_history(2)
@@ -237,8 +260,7 @@ def robotState(state: int):
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(full, -full)
-            time.sleep(
-                0.4)  # ===================== use this to dial 90 degree turns =====================================
+            time.sleep(0.4)  # dial 90 degree turns
             send_set_vel_pwm(0, 0)
             send_set_vel_pwm(64, 64)
             state_history(3)
@@ -247,108 +269,234 @@ def robotState(state: int):
         case 4:
             # Bridge
             send_servo_raise(180)
-            # motor commands
-            # ===========================
-            # LINE UP WITH OBSTACLE
-            # ===========================
+            # TODO: add detailed bridge behavior here
             send_servo_lower()
             state_history(4)
 
         case 5:
             # Ramp
             send_servo_raise(180)
-            # motor commands
-            # ===========================
-            # LINE UP WITH OBSTACLE
-            # ===========================
+            # TODO: add detailed ramp behavior here
             send_servo_lower()
             state_history(5)
 
         case 6:
-            # gravel
+            # Gravel
             send_servo_raise(180)
-            # motor commands
-            # ===========================
-            # LINE UP WITH OBSTACLE
-            # ===========================
             send_set_vel_pwm(full, full)
-            time.sleep(2)  # ================= Use to Dial gravel time ======================
+            time.sleep(2)  # dial gravel time
             send_set_vel_pwm(64, 64)
             time.sleep(0.1)
             send_set_vel_pwm(0, 0)
-            # ===========================
-            # AM I IN THE RIGHT SPOT?
-            # ==========================
             send_servo_lower()
             state_history(6)
 
 
 # ==========================================================================================================
-# Pixy2 Code ===============================================================================================
+# Pixy2 USB (SWIG) Code ====================================================================================
 # ==========================================================================================================
 
 def init_pixy2():
-    """Initialize Pixy2 camera for line following."""
-    global pixy2
+    """Initialize Pixy2 camera over USB for color + line detection."""
+    global pixy_blocks, pixy_vectors
+    if not _pixy_available:
+        print("[WARN] Pixy2 Python module not loaded; skipping Pixy init.")
+        return False
+
     try:
-        pixy2 = Pixy2(port=PIXY2_PORT)
-        pixy2.set_lamp(1, 1)  # Turn on lamps
-        print("[OK] Pixy2 initialized")
+        pixy.init()
+        pixy.change_prog("line")  # use line-tracking program
+
+        try:
+            pixy.set_lamp(1, 1)  # turn on both lamps if supported
+        except AttributeError:
+            pass
+
+        if pixy_blocks is None and BlockArray is not None:
+            pixy_blocks = BlockArray(50)
+        if pixy_vectors is None and VectorArray is not None:
+            pixy_vectors = VectorArray(10)
+
+        fw = get_frame_width()
+        print(f"[OK] Pixy2 initialized over USB (frame width = {fw})")
         return True
     except Exception as e:
         print(f"[WARN] Pixy2 not available: {e}")
-        pixy2 = None
         return False
+
+
+def detect_color_blocks():
+    """
+    Detect color blocks using trained signatures via SWIG API.
+
+    Returns: detected_signature or None
+
+    Signature mapping:
+    - 1 = Blue
+    - 2 = Orange
+    - 3 = Purple
+    """
+    global last_detected_color, color_detection_timestamp
+
+    if not _pixy_available or pixy_blocks is None:
+        return None
+
+    try:
+        count = pixy.ccc_get_blocks(50, pixy_blocks)
+    except Exception as e:
+        print(f"[Pixy2 Color ERROR] {e}")
+        return None
+
+    if count <= 0:
+        return None
+
+    # Select largest area block
+    largest = None
+    largest_area = 0
+    for i in range(count):
+        b = pixy_blocks[i]
+        area = b.m_width * b.m_height
+        if area > largest_area:
+            largest_area = area
+            largest = b
+
+    if largest is None or largest_area < 100:  # noise threshold
+        return None
+
+    signature = largest.m_signature
+
+    # Map signature to color name for logging
+    color_names = {1: "BLUE", 2: "ORANGE", 3: "PURPLE"}
+    color_name = color_names.get(signature, "UNKNOWN")
+
+    # Debounce
+    current_time = time.time()
+    if signature != last_detected_color or (current_time - color_detection_timestamp) > 2.0:
+        print(f"[PIXY] Detected {color_name} (sig={signature}), size={largest_area}")
+        last_detected_color = signature
+        color_detection_timestamp = current_time
+
+    return signature
 
 
 def get_pixy_steering():
     """
-    Read Pixy2 and return steering adjustment.
-    Returns: correction value to apply to motors, or None if no lines detected.
+    Read Pixy2 line vectors and return steering info.
 
-    Positive correction = turn left (increase left motor, decrease right motor)
-    Negative correction = turn right
+    Returns:
+      None if no lines,
+      or (correction, mode, edge_side) where:
+        mode = "two"  -> using two edges (center between them)
+        mode = "one"  -> single line; edge_side in {"left","right"}
     """
-    if pixy2 is None:
+    if not _pixy_available or pixy_vectors is None:
         return None
 
     try:
-        # Get line vectors from Pixy2
-        vectors = pixy2.get_main_features()
-
-        if not vectors or len(vectors) < 2:
-            return None
-
-        # Find left and right edge lines
-        line_xs = [(vec['x0'] + vec['x1']) / 2 for vec in vectors]
-        line_xs.sort()
-
-        left_edge = line_xs[0]
-        right_edge = line_xs[-1]
-
-        # Calculate track center and robot position
-        track_center = (left_edge + right_edge) / 2
-        robot_center = 79 / 2  # Pixy2 frame width / 2
-
-        # Error = how far off-center we are
-        error = track_center - robot_center
-
-        # Simple proportional control
-        correction = error * 2.5  # Adjust this gain as needed
-
-        return correction
-
+        # Update line features then grab vectors
+        line_get_main_features()
+        count = line_get_vectors(len(pixy_vectors), pixy_vectors)
     except Exception as e:
-        print(f"[Pixy2 ERROR] {e}")
+        print(f"[Pixy2 Line ERROR] {e}")
         return None
 
+    if count <= 0:
+        return None
 
-# ==========================================================================================================
-# TOF Sensor Logic (UNCHANGED) =============================================================================
-# ==========================================================================================================
+    # Compute midpoint X of each vector
+    line_xs = []
+    for i in range(count):
+        v = pixy_vectors[i]
+        mid_x = 0.5 * (v.m_x0 + v.m_x1)
+        line_xs.append(mid_x)
+
+    line_xs.sort()
+
+    # Frame width from Pixy, fallback if needed
+    try:
+        frame_width = float(get_frame_width())
+    except Exception:
+        frame_width = 79.0
+
+    robot_center = frame_width / 2.0
+    gain = 2.5
+
+    # Two (or more) lines: treat as left/right edges
+    if len(line_xs) >= 2:
+        left_edge = line_xs[0]
+        right_edge = line_xs[-1]
+        track_center = 0.5 * (left_edge + right_edge)
+        error = track_center - robot_center
+        correction = error * gain
+        return correction, "two", None
+
+    # Exactly one line
+    line_x = line_xs[0]
+    edge_side = "left" if line_x < robot_center else "right"
+    error = line_x - robot_center
+    correction = error * gain
+    return correction, "one", edge_side
+
+
+def handle_color_detection(signature):
+    """
+    Execute actions based on detected color signature.
+    Color combinations:
+    - Blue + Orange = Bridge
+    - Orange + Purple = Gravel
+    - Blue + Purple = Ramp
+    """
+    global prev_color_for_pair
+
+    color_names = {SIG_BLUE: "BLUE", SIG_ORANGE: "ORANGE", SIG_PURPLE: "PURPLE"}
+    this_name = color_names.get(signature, f"UNKNOWN({signature})")
+
+    if prev_color_for_pair is None:
+        prev_color_for_pair = signature
+        print(f"[PIXY] First color in pair: {this_name} (sig={signature})")
+        return
+
+    first_sig = prev_color_for_pair
+    first_name = color_names.get(first_sig, f"UNKNOWN({first_sig})")
+    colors = {first_sig, signature}
+
+    print(f"[PIXY] Color pair: {first_name} + {this_name} -> {colors}")
+
+    if colors == {SIG_BLUE, SIG_ORANGE}:
+        print("[ACTION] Blue + Orange detected - Bridge")
+        robotState(4)
+
+    elif colors == {SIG_ORANGE, SIG_PURPLE}:
+        print("[ACTION] Orange + Purple detected - Gravel")
+        robotState(6)
+
+    elif colors == {SIG_BLUE, SIG_PURPLE}:
+        print("[ACTION] Blue + Purple detected - Ramp")
+        robotState(5)
+
+    else:
+        print("[WARN] Invalid color combination detected")
+
+    prev_color_for_pair = None
+
+
+# =============================================================================================================
+# TOF Sensor Logic ============================================================================================
+# =============================================================================================================
+
+MIN_VALID_MM = 50
+MAX_VALID_MM = 1500
+TARGET_SIDE_DIST_MM = 300   # desired distance to the "far" wall
+K_TOF_STEER = 0.05          # how strongly ToF affects steering
+
+
+def tof_valid(d):
+    return MIN_VALID_MM <= d <= MAX_VALID_MM
+
 
 def reset_all_sensors():
     print("\n[RESET] Power-cycling ALL VL53L0X sensors...")
+
     send_set_vel_pwm(0, 0)
 
     for x in (xshut1, xshut2, xshut3, xshut4):
@@ -371,20 +519,23 @@ def safe_read(sensor, name):
     except Exception as e:
         print(f"[I2C ERROR] {name}: {e} — resetting ALL sensors")
         reset_all_sensors()
-        return 9999
+        return 9999  # fail-safe distance
 
 
 def interpret_data(r, l, fr, fl):
-    """
-    Original TOF-based decision making, now with optional Pixy2 steering assist.
-    """
     full = 255
+
+    # Check for color blocks first
+    detected_sig = detect_color_blocks()
+    if detected_sig is not None:
+        handle_color_detection(detected_sig)
+        return
 
     # Front both < 200mm
     fronts_near = ((fr < 230) and (fl < 230))
 
     # Front Slant
-    slant = abs(fr - fl) >= 400
+    slant = abs(fr - fl) >= 400  # adjust slant threshold as needed
 
     # 90 degree turns
     if abs(r - l) > 200 and fronts_near:
@@ -399,21 +550,51 @@ def interpret_data(r, l, fr, fl):
             robotState(3)
             return
 
-    # Try Pixy2 steering first
-    pixy_correction = get_pixy_steering()
+    # Try Pixy2 steering first (with ToF fusion when only one line)
+    pixy_result = get_pixy_steering()
 
-    if pixy_correction is not None:
-        # Pixy2 is tracking both lines - use it for steering
+    if pixy_result is not None:
+        pixy_correction, mode, edge_side = pixy_result
+
         base_speed = 150
-        left_speed = base_speed + pixy_correction
-        right_speed = base_speed - pixy_correction
 
-        # Constrain speeds
+        if mode == "two":
+            left_speed = base_speed + pixy_correction
+            right_speed = base_speed - pixy_correction
+
+        elif mode == "one":
+            tof_extra = 0.0
+
+            # line on the right -> use LEFT ToF as far wall
+            if edge_side == "right":
+                if tof_valid(l):
+                    tof_error = l - TARGET_SIDE_DIST_MM
+                    tof_extra = K_TOF_STEER * tof_error
+                else:
+                    print("[FUSION] Left ToF invalid in 1-line RIGHT mode — Pixy-only steering")
+
+            # line on the left -> use RIGHT ToF as far wall
+            elif edge_side == "left":
+                if tof_valid(r):
+                    tof_error = r - TARGET_SIDE_DIST_MM
+                    tof_extra = -K_TOF_STEER * tof_error
+                else:
+                    print("[FUSION] Right ToF invalid in 1-line LEFT mode — Pixy-only steering")
+
+            combined = pixy_correction + tof_extra
+
+            left_speed = base_speed + combined
+            right_speed = base_speed - combined
+
+        else:
+            left_speed = base_speed
+            right_speed = base_speed
+
         left_speed = max(50, min(200, left_speed))
         right_speed = max(50, min(200, right_speed))
 
         send_set_vel_pwm(int(left_speed), int(right_speed))
-        state_history(20)  # New state for Pixy2 steering
+        state_history(20)  # Pixy2 steering (possibly fused with ToF)
         return
 
     # Fallback to original TOF-based steering
@@ -421,12 +602,15 @@ def interpret_data(r, l, fr, fl):
         if r > l:
             send_set_vel_pwm(10, 200)
             state_history(10)
+
         elif r < l:
             send_set_vel_pwm(200, 10)
             state_history(11)
+
         elif fr > fl:
             send_set_vel_pwm(10, 200)
             state_history(12)
+
         elif fr < fl:
             send_set_vel_pwm(200, 10)
             state_history(13)
@@ -440,12 +624,11 @@ def driving():
         s.measurement_timing_budget = 20000
         s.continuous_mode()
 
-    time.sleep(0.1)
+    time.sleep(0.1)  # delay for readings to begin giving data
 
     arrR, arrL, arrFR, arrFL = [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
 
     while True:
-        # Read raw sensor data
         mR = safe_read(lox1, "Right")
         mL = safe_read(lox2, "Left")
         mFR = safe_read(lox3, "Front1")
@@ -454,20 +637,35 @@ def driving():
         if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:
             robotState(1)
 
-        # Sliding window
+        # sliding window of length 3
         arrR = np.append(arrR[1:], mR)
         arrL = np.append(arrL[1:], mL)
         arrFR = np.append(arrFR[1:], mFR)
         arrFL = np.append(arrFL[1:], mFL)
 
-        # Median filter
+        # median filter over the 3 samples
         fR = medfilt(arrR, kernel_size=3)[-1]
         fL = medfilt(arrL, kernel_size=3)[-1]
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
-        # Decision logic (now with optional Pixy2)
         interpret_data(fR, fL, fFR, fFL)
+
+
+# ===========================================================================================================
+# MOTOR TEST SEQUENCE
+# ==========================================================================================================
+def motor_test_sequence():
+    send_set_vel_pwm(200, 200)
+    time.sleep(2)
+
+    print("\n[TEST] Stop")
+    send_set_vel_pwm(64, 64)
+    time.sleep(0.1)
+    send_set_vel_pwm(0, 0)
+    time.sleep(1.0)
+
+    print("\n[TEST] Motor test sequence complete.")
 
 
 # ==========================================================================================================
@@ -480,11 +678,11 @@ def main():
         print("Exiting due to sensor initialization failure.")
         return
 
-    # Try to initialize Pixy2 (optional)
-    init_pixy2()
+    init_pixy2()  # USB Pixy2
 
-    time.sleep(2)
+    time.sleep(20)
     driving()
+    # motor_test_sequence()
 
 
 if __name__ == "__main__":
@@ -492,4 +690,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nExiting.")
-        send_set_vel_pwm(0, 0)

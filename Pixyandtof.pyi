@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 import time
 import numpy as np
-import board
+import board  # Blinka pin names for Raspberry Pi
 import busio
 from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
 from scipy.signal import medfilt
-from pixy2 import Pixy2
 
 # ==========================================================================================================
 # General Setup ============================================================================================
@@ -19,6 +18,12 @@ ARDUINO_BAUD = 115200
 PIXY2_PORT = "/dev/ttyACM1"  # Adjust if Pixy2 is on different port
 pixy2 = None
 
+# Pixy2 Color Signatures
+SIG_BLUE = 1  # Signature 1 = Blue
+SIG_ORANGE = 2  # Signature 2 = Orange
+SIG_PURPLE = 3  # Signature 3 = Purple
+
+# Try to open serial; fall back to print-only if not available
 try:
     import serial
 
@@ -49,22 +54,22 @@ LOX3_ADDRESS = 0x32  # Front1
 LOX4_ADDRESS = 0x33  # Front2
 
 # -------- XSHUT pins --------
-SHT_LOX1_PIN = board.D5   # Right XSHUT
+SHT_LOX1_PIN = board.D5  # Right XSHUT
 SHT_LOX2_PIN = board.D17  # Left  XSHUT
-SHT_LOX3_PIN = board.D6   # Front1 XSHUT
+SHT_LOX3_PIN = board.D6  # Front1 XSHUT
 SHT_LOX4_PIN = board.D27  # Front2 XSHUT
 
 # ---- hardware bring-up (VL53L0X) ----
 i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
 
 # XSHUT controls
-xshut1 = DigitalInOut(SHT_LOX1_PIN)
+xshut1 = DigitalInOut(SHT_LOX1_PIN);
 xshut1.direction = Direction.OUTPUT
-xshut2 = DigitalInOut(SHT_LOX2_PIN)
+xshut2 = DigitalInOut(SHT_LOX2_PIN);
 xshut2.direction = Direction.OUTPUT
-xshut3 = DigitalInOut(SHT_LOX3_PIN)
+xshut3 = DigitalInOut(SHT_LOX3_PIN);
 xshut3.direction = Direction.OUTPUT
-xshut4 = DigitalInOut(SHT_LOX4_PIN)
+xshut4 = DigitalInOut(SHT_LOX4_PIN);
 xshut4.direction = Direction.OUTPUT
 
 # Sensor objects
@@ -154,7 +159,6 @@ three_Quarter_Speed = 0.75
 
 
 def send_set_vel_pwm(left_pwm, right_pwm):
-    # Global scaling for all speeds
     speed = half_Speed
     L = round(left_pwm * speed)
     R = round(right_pwm * speed)
@@ -187,12 +191,15 @@ def send_servo_pos():
 
 
 # ==========================================================================================================
-# Robot State Machine ======================================================================================
+# =============================== LOOP START ?? ============================================================
 # ==========================================================================================================
 
 previous_states = []
+last_detected_color = None
+color_detection_timestamp = 0
 
 
+# history of states - no double 90 in the same direction
 def state_history(state: int):
     previous_states.append(state)
     if len(previous_states) > 10:
@@ -200,115 +207,100 @@ def state_history(state: int):
     print("History:", previous_states)
 
 
-def read_front_distance():
-    """Return the minimum of the two front ToF sensors (mm)."""
-    return min(
-        safe_read(lox3, "Front1"),
-        safe_read(lox4, "Front2")
-    )
-
-
-FRONT_CLEAR_MM = 600   # ~2 ft (tune as needed)
-TURN_TIMEOUT   = 3.0   # safety timeout in seconds
-
-
-def turn_until_front_clear(direction: str):
-    """
-    Turn in place until the front is clear (front distance > FRONT_CLEAR_MM),
-    or until TURN_TIMEOUT is reached.
-    """
-    if direction == "right":
-        left_cmd, right_cmd = -255, 255
-    elif direction == "left":
-        left_cmd, right_cmd = 255, -255
-    else:
-        return
-
-    send_set_vel_pwm(left_cmd, right_cmd)
-    start_time = time.time()
-
-    while True:
-        if read_front_distance() > FRONT_CLEAR_MM:
-            break
-        if time.time() - start_time > TURN_TIMEOUT:
-            break
-        time.sleep(0.02)
-
-    send_set_vel_pwm(0, 0)
-    time.sleep(0.1)
-    send_set_vel_pwm(64, 64)
-    time.sleep(0.2)
-    send_set_vel_pwm(0, 0)
-
-
+# state of machine --> motor commands   In loop or out of loop?
 def robotState(state: int):
-    """
-    Discrete routines for obstacle / 90° turns / bridge / ramp / gravel.
-    90° turns (2 / 3) use front ToF 'clear' logic.
-    """
     full = 255
     half = 255 / 2
 
     match state:
         case 1:
-            # Obstacle routine
+            # Obstacle
+            # Stop
+            # Backup
+            # reassess
             send_set_vel_pwm(100, 100)
             time.sleep(0.1)
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-100, -100)
-            time.sleep(0.25)
+            time.sleep(.5)
+            send_set_vel_pwm(100, 100)
+            time.sleep(0.1)
             send_set_vel_pwm(0, 0)
             state_history(1)
-            print("Obstacle routine")
 
         case 2:
-            # Right 90 using front-clear logic
-            turn_until_front_clear("right")
+            # Right90
+            send_set_vel_pwm(0, 0)
+            time.sleep(0.1)
+            send_set_vel_pwm(-full, full)
+            time.sleep(
+                .5)  # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(0, 0)
+            send_set_vel_pwm(64, 64)
             state_history(2)
+            print("Right 90 turn")
 
         case 3:
-            # Left 90 using front-clear logic
-            turn_until_front_clear("left")
+            # Left90
+            send_set_vel_pwm(0, 0)
+            time.sleep(0.1)
+            send_set_vel_pwm(full, -full)
+            time.sleep(
+                0.4)  # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(0, 0)
+            send_set_vel_pwm(64, 64)
             state_history(3)
+            print("Left 90 turn")
 
         case 4:
             # Bridge
             send_servo_raise(180)
-            # TODO: add motor sequence for bridge
+            # motor commands
+            # ===========================
+            # LINE UP WITH OBSTACLE
+            # ===========================
             send_servo_lower()
             state_history(4)
-            print("Bridge routine")
 
         case 5:
             # Ramp
             send_servo_raise(180)
-            # TODO: add motor sequence for ramp
+            # motor commands
+            # ===========================
+            # LINE UP WITH OBSTACLE
+            # ===========================
             send_servo_lower()
             state_history(5)
-            print("Ramp routine")
 
         case 6:
-            # Gravel
+            # gravel
             send_servo_raise(180)
+            # motor commands
+            # ===========================
+            # LINE UP WITH OBSTACLE
+            # ===========================
             send_set_vel_pwm(full, full)
-            time.sleep(2)  # tune gravel time
+            time.sleep(2)  #================= Use to Dial gravel time ======================
             send_set_vel_pwm(64, 64)
             time.sleep(0.1)
             send_set_vel_pwm(0, 0)
+            # ===========================
+            # AM I IN THE RIGHT SPOT?
+            # ==========================
             send_servo_lower()
             state_history(6)
-            print("Gravel routine")
 
 
 # ==========================================================================================================
-# Pixy2 Code ===============================================================================================
+# Pixy Code  ===============================================================================================
 # ==========================================================================================================
 
 def init_pixy2():
-    """Initialize Pixy2 camera for line following."""
+    """Initialize Pixy2 camera for color and line detection."""
     global pixy2
     try:
+        from pixy2 import Pixy2
         pixy2 = Pixy2(port=PIXY2_PORT)
         pixy2.set_lamp(1, 1)  # Turn on lamps
         print("[OK] Pixy2 initialized")
@@ -319,9 +311,59 @@ def init_pixy2():
         return False
 
 
+def detect_color_blocks():
+    """
+    Detect color blocks using trained signatures.
+    Returns: detected_signature or None
+
+    Signature mapping:
+    - 1 = Blue
+    - 2 = Orange
+    - 3 = Purple
+    """
+    global last_detected_color, color_detection_timestamp
+
+    if pixy2 is None:
+        return None
+
+    try:
+        # Get color blocks from Pixy2
+        blocks = pixy2.get_blocks(sigmap=7, maxblocks=10)  # sigmap=7 means sigs 1,2,3
+
+        if not blocks or len(blocks) == 0:
+            return None
+
+        # Find the largest block (most likely to be relevant)
+        largest_block = max(blocks, key=lambda b: b['width'] * b['height'])
+
+        signature = largest_block['signature']
+
+        # Only report if block is large enough (filter noise)
+        area = largest_block['width'] * largest_block['height']
+        if area < 100:  # Adjust threshold as needed
+            return None
+
+        # Map signature to color name for logging
+        color_names = {1: "BLUE", 2: "ORANGE", 3: "PURPLE"}
+        color_name = color_names.get(signature, "UNKNOWN")
+
+        # Debounce: only report new color if it's different or been a while
+        current_time = time.time()
+        if signature != last_detected_color or (current_time - color_detection_timestamp) > 2.0:
+            print(f"[PIXY] Detected {color_name} (sig={signature}), size={area}")
+            last_detected_color = signature
+            color_detection_timestamp = current_time
+
+        return signature
+
+    except Exception as e:
+        print(f"[Pixy2 Color ERROR] {e}")
+        return None
+
+
 def get_pixy_steering():
     """
-    Read Pixy2 and return steering adjustment.
+    Read Pixy2 line vectors and return steering adjustment.
     Returns: correction value to apply to motors, or None if no lines detected.
 
     Positive correction = turn left (increase left motor, decrease right motor)
@@ -337,7 +379,7 @@ def get_pixy_steering():
         if not vectors or len(vectors) < 2:
             return None
 
-        # We assume vectors is a list of dict-like objects with x0/x1
+        # Find left and right edge lines
         line_xs = [(vec['x0'] + vec['x1']) / 2 for vec in vectors]
         line_xs.sort()
 
@@ -346,33 +388,74 @@ def get_pixy_steering():
 
         # Calculate track center and robot position
         track_center = (left_edge + right_edge) / 2
-        robot_center = 79 / 2  # Pixy2 frame width / 2 (approx)
+        robot_center = 79 / 2  # Pixy2 frame width / 2
 
         # Error = how far off-center we are
         error = track_center - robot_center
 
         # Simple proportional control
-        correction = error * 2.5  # Adjust gain as needed
+        correction = error * 2.5  # Adjust this gain as needed
 
         return correction
 
     except Exception as e:
-        print(f"[Pixy2 ERROR] {e}")
+        print(f"[Pixy2 Line ERROR] {e}")
         return None
 
 
-# ==========================================================================================================
-# TOF Sensor Logic =========================================================================================
-# ==========================================================================================================
+def handle_color_detection(signature):
+    """
+    Execute actions based on detected color signature.
+    Color combinations:
+    - Blue + Orange = Bridge
+    - Orange + Purple = Gravel
+    - Blue + Purple = Ramp
+    """
+    global last_detected_color
 
+    # Check if we have a previous color to make a pair
+    if last_detected_color is None:
+        # First color detected, just store it
+        return
+
+    # We have two colors, check the combination
+    colors = {last_detected_color, signature}
+
+    if colors == {SIG_BLUE, SIG_ORANGE}:
+        print("[ACTION] Blue + Orange detected - Bridge")
+        robotState(4)  # Bridge routine
+        last_detected_color = None  # Reset after action
+
+    elif colors == {SIG_ORANGE, SIG_PURPLE}:
+        print("[ACTION] Orange + Purple detected - Gravel")
+        robotState(6)  # Gravel routine
+        last_detected_color = None  # Reset after action
+
+    elif colors == {SIG_BLUE, SIG_PURPLE}:
+        print("[ACTION] Blue + Purple detected - Ramp")
+        robotState(5)  # Ramp routine
+        last_detected_color = None  # Reset after action
+    else:
+        # Invalid combination, reset
+        print(f"[WARN] Invalid color combination detected")
+        last_detected_color = None
+
+
+# =============================================================================================================
+# TOF Sensor Logic ============================================================================================
+# =============================================================================================================
 def reset_all_sensors():
     print("\n[RESET] Power-cycling ALL VL53L0X sensors...")
+
+    # Stop movement just in case
     send_set_vel_pwm(0, 0)
 
+    # Kill all sensors via XSHUT
     for x in (xshut1, xshut2, xshut3, xshut4):
         x.value = False
     time.sleep(0.1)
 
+    # Re-initialize using existing logic
     ok = setID()
 
     if ok:
@@ -386,132 +469,160 @@ def reset_all_sensors():
 def safe_read(sensor, name):
     try:
         return sensor.range
+
     except Exception as e:
         print(f"[I2C ERROR] {name}: {e} — resetting ALL sensors")
         reset_all_sensors()
-        return 9999
+        return 9999  # fail-safe distance
 
 
-# ==========================================================================================================
-# Combined Decision Logic (ToF + Pixy2) ====================================================================
-# ==========================================================================================================
-
+# decision-making based on filtered sensor data
+# Interpret data / assign triggers
 def interpret_data(r, l, fr, fl):
-    """
-    Combined ToF + Pixy2 decision:
-      - ToF = coarse structure (90° turns) and guardrails
-      - Pixy2 = fine steering when line is visible
-    """
-    fronts_near = (fr < 230 and fl < 230)
-    slant = abs(fr - fl) >= 400
+    full = 255
 
-    # ---------- 1) Look for 90°-turn situations from ToF ----------
+    # Check for color blocks first
+    detected_sig = detect_color_blocks()
+    if detected_sig is not None:
+        handle_color_detection(detected_sig)
+        return
+
+    # Front both < 200mm
+    fronts_near = ((fr < 230) and (fl < 230))
+
+    # Front Slant
+    slant = abs(fr - fl) >= 400  # ======== Adjust slant values here =========
+
+    # ------------------------------------------------------------------
+
+    # 90 degree turns
     if abs(r - l) > 200 and fronts_near:
-        # Avoid immediately re-triggering after a turn
+        # If last state was 2 (Right90) or 3 (Left90) → skip this block
         if previous_states and previous_states[-1] in (2, 3):
             return
 
         if r > l:
-            robotState(2)  # Right 90
-        else:
-            robotState(3)  # Left 90
-        return  # Turn overrides line following for this cycle
+            robotState(2)
+            return
 
-    # ---------- 2) Get Pixy steering if available ----------
+        elif r < l:
+            robotState(3)
+            return
+
+    # Try Pixy2 steering first
     pixy_correction = get_pixy_steering()
 
-    base_speed = 150
-    left_speed = base_speed
-    right_speed = base_speed
-
     if pixy_correction is not None:
-        # Use Pixy for fine steering
-        left_speed += pixy_correction
-        right_speed -= pixy_correction
+        # Pixy2 is tracking both lines - use it for steering
+        base_speed = 150
+        left_speed = base_speed + pixy_correction
+        right_speed = base_speed - pixy_correction
 
-        # ---------- 3) Use ToF to fence Pixy steering ----------
-        # Example: if right side is very close, don't allow strong right turns
-        if r < 100:
-            right_speed = max(right_speed, base_speed - 20)
-
-        if l < 100:
-            left_speed = max(left_speed, base_speed - 20)
-
-        # Clip speeds
+        # Constrain speeds
         left_speed = max(50, min(200, left_speed))
         right_speed = max(50, min(200, right_speed))
 
         send_set_vel_pwm(int(left_speed), int(right_speed))
-        state_history(20)  # Pixy-based steering with ToF guardrails
+        state_history(20)  # Pixy2 steering
         return
 
-    # ---------- 4) Fallback: ToF-only steering ----------
-    if abs(r - l) >= 50 or slant:
+    # Fallback to original TOF-based steering
+    if abs(r - l) >= 50 or slant:  # ======== Adjust turn values here ===========
         if r > l:
             send_set_vel_pwm(10, 200)
             state_history(10)
+
         elif r < l:
             send_set_vel_pwm(200, 10)
             state_history(11)
+
         elif fr > fl:
             send_set_vel_pwm(10, 200)
             state_history(12)
+
         elif fr < fl:
             send_set_vel_pwm(200, 10)
             state_history(13)
     else:
-        send_set_vel_pwm(150, 150)
+        send_set_vel_pwm(150, 150)  # ======= ADJUST STANDARD SPEED HERE ===============
         state_history(99)
+    #-------------------------------------------------------------------
 
-
-# ==========================================================================================================
-# Main Driving Loop ========================================================================================
-# ==========================================================================================================
 
 def driving():
-    # Configure all sensors for continuous ranging (~20ms per reading)
     for s in (lox1, lox2, lox3, lox4):
         s.measurement_timing_budget = 20000
         s.continuous_mode()
 
-    time.sleep(0.1)
+    time.sleep(0.1)  # delay for readings to begin giving data
 
-    # Sliding window buffers for median filter
     arrR, arrL, arrFR, arrFL = [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]
 
     while True:
-        # Read raw sensor data
+        # read raw sensor data / collect 3 readings per sensor in array
         mR = safe_read(lox1, "Right")
         mL = safe_read(lox2, "Left")
         mFR = safe_read(lox3, "Front1")
         mFL = safe_read(lox4, "Front2")
 
-        # ===========  EMERGENCY STOP CONDITIONS  ============
-        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:
+        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:  # ===========  EMERGENCY STOP CONDITIONS  ============
             robotState(1)
 
-        # Sliding window (3 samples each)
+        # ----- sliding window of length 3 for each sensor -----
+        np.delete(arrR, 0);
+        np.delete(arrL, 0);
+        np.delete(arrFR, 0);
+        np.delete(arrFL, 0);
+
+        # convert to NumPy arrays
         arrR = np.append(arrR[1:], mR)
         arrL = np.append(arrL[1:], mL)
         arrFR = np.append(arrFR[1:], mFR)
         arrFL = np.append(arrFL[1:], mFL)
 
-        # Median filter; take latest filtered value
+        # median filter over the 3 samples
         fR = medfilt(arrR, kernel_size=3)[-1]
         fL = medfilt(arrL, kernel_size=3)[-1]
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
-        # Combined decision logic (ToF + Pixy2)
+        # decision logic (now with Pixy2)
         interpret_data(fR, fL, fFR, fFL)
-        # Optional: small pause if you want to reduce CPU usage
-        # time.sleep(0.005)
+
+
+#===========================================================================================================
+# MOTOR TEST SEQUENCE
+#==========================================================================================================
+def motor_test_sequence():
+    """
+    Simple motor test that ignores all sensors and just exercises the robotState
+    commands in a fixed sequence:
+
+      1) Straight for 3 seconds
+      2) Adjust right
+      3) Adjust left
+      4) Slope right for 3 seconds
+      5) Slope left for 3 seconds
+      6) 90 degree right
+      7) 90 degree left
+      8) Stop
+    """
+
+    send_set_vel_pwm(200, 200)
+    time.sleep(2)
+
+    print("\n[TEST] Stop")
+    send_set_vel_pwm(64, 64)
+    time.sleep(0.1)
+    send_set_vel_pwm(0, 0)
+    time.sleep(1.0)
+
+    print("\n[TEST] Motor test sequence complete.")
 
 
 # ==========================================================================================================
 # Main =====================================================================================================
 # ==========================================================================================================
-
 def main():
     print("Starting")
     ok = setID()
@@ -522,8 +633,9 @@ def main():
     # Try to initialize Pixy2 (optional)
     init_pixy2()
 
-    time.sleep(2)
+    time.sleep(20)
     driving()
+    #motor_test_sequence()
 
 
 if __name__ == "__main__":
@@ -531,4 +643,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nExiting.")
-        send_set_vel_pwm(0, 0)
