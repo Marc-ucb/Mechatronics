@@ -1,0 +1,45 @@
+============================================================
+PIXY2 MODULE DIAGNOSTICS
+============================================================
+
+1. Python Version: 3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]
+   Python Executable: /home/smashbot/my_venv/bin/python
+
+2. Current sys.path:
+   [0] /home/smashbot/Downloads
+   [1] /usr/lib/python311.zip
+   [2] /usr/lib/python3.11
+   [3] /usr/lib/python3.11/lib-dynload
+   [4] /home/smashbot/my_venv/lib/python3.11/site-packages
+
+3. Searching for pixy module files...
+   ✗ Path not found: /home/pi/pixy2/build/python_demos
+   ✗ Path not found: /home/pi/pixy2/scripts
+   ✗ Path not found: /usr/local/lib/python3.9/dist-packages
+   ✓ Path exists: /usr/local/lib/python3.11/dist-packages
+   ✓ Path exists: /home/smashbot/pixy2/build/python_demos
+     Found files: ['pixy_set_lamp_demo.py', '_pixy.cpython-311-aarch64-linux-gnu.so', 'pixy.py', 'pixy_python_interface.cpp', 'pixy_wrap.cxx', 'pixy.i']
+
+4. Attempting to import pixy module...
+   ✓ SUCCESS: pixy imported directly
+     Module location: /home/smashbot/my_venv/lib/python3.11/site-packages/pixy/__init__.py
+     Module dir: ['EscapeSequence', 'ExtendedColour', 'Font', 'TrueColour', '__all__', '__builtins__', '__cached__', '__doc__', '__file__', '__loader__']...
+
+   Trying with path: /home/smashbot/pixy2/build/python_demos
+   ✓ SUCCESS with this path!
+     Module location: /home/smashbot/my_venv/lib/python3.11/site-packages/pixy/__init__.py
+
+5. Checking for SWIG wrapper file (_pixy.so)...
+   Found in /home/smashbot/pixy2/build/python_demos:
+     - _pixy.cpython-311-aarch64-linux-gnu.so
+       Size: 469352 bytes
+
+6. Testing import of specific Pixy classes...
+   ✗ Failed to import classes: cannot import name 'BlockArray' from 'pixy' (/home/smashbot/my_venv/lib/python3.11/site-packages/pixy/__init__.py)
+
+7. Checking USB devices...
+   Found USB devices: ['ttyACM0', 'usb']
+
+============================================================
+DIAGNOSTICS COMPLETE
+============================================================
