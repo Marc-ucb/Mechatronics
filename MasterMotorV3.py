@@ -202,20 +202,20 @@ def robotState(state: int):
             send_set_vel_pwm(0,0)
             time.sleep(0.1)
             send_set_vel_pwm(-100, -100)
-            time.sleep(.25)
+            time.sleep(.5)
+            send_set_vel_pwm(0, 0)
             state_history(1)
 
 
         case 2:
             # Right90
 
-           
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-full, full)
             time.sleep(.5) # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0, 0)
-            send_set_vel_pwm(64,64)
+          
             state_history(2)
             print("Right 90 turn")
 
@@ -227,7 +227,7 @@ def robotState(state: int):
             send_set_vel_pwm(full,-full)
             time.sleep(0.4)  # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0,0)
-            send_set_vel_pwm(64,64)
+          
             state_history(3)
             print("Left 90 turn")
 
@@ -339,17 +339,17 @@ def interpret_data(r, l, fr, fl):
     full = 255
 
     # Front both < 200mm
-    fronts_near = ((fr < 230) and (fl < 230))
+    fronts_near = ((fr < 350) and (fl < 350))
 
     # Front Slant
-    slant = abs(fr - fl) >= 400                      # ======== Adjust slant values here =========
+    slant = abs(fr - fl) >= 300                      # ======== Adjust slant values here =========
 
     # ------------------------------------------------------------------
     
     
-    
+    send_set_vel_pwm(64,64)
     # 90 degree turns
-    if abs(r - l) > 200 and fronts_near:
+    if abs(r - l) > 100 and fronts_near:
         # If last state was 2 (Right90) or 3 (Left90) → skip this block
         if previous_states and previous_states[-1] in (2, 3):
             return
@@ -364,30 +364,35 @@ def interpret_data(r, l, fr, fl):
 
     # keep robot straight
 
-    if abs(r - l) >= 50 or slant:                    # ======== Adjust turn values here ===========
+    if abs(r - l) >= 30 or slant:                    # ======== Adjust turn values here ===========
         if r > l:
-            send_set_vel_pwm(10,200)
+            send_set_vel_pwm(10,225)
             state_history(10)
+            return
 
         elif r < l:
-            send_set_vel_pwm(200, 10)
+            send_set_vel_pwm(225, 10)
             state_history(11)
+            return
 
         elif fr > fl:
-            send_set_vel_pwm(10,200)
+            send_set_vel_pwm(10,225)
             state_history(12)
+            return
 
         elif fr < fl:
-            send_set_vel_pwm(200, 10)
+            send_set_vel_pwm(225, 10)
             state_history(13)
+            return
     else:
         send_set_vel_pwm(150, 150)  # ======= ADJUST STANDARD SPEED HERE ===============
         state_history(99)
+        return
     #-------------------------------------------------------------------
 
 
 def driving():
-
+    
     for s in (lox1, lox2, lox3, lox4):
         s.measurement_timing_budget = 20000
         s.continuous_mode()
@@ -433,6 +438,8 @@ def driving():
         fFR = medfilt(arrFR, kernel_size=3)[-1]
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
+        now = time.time()
+        print("time slice: ", now)
         # decision logic
         interpret_data(fR, fL, fFR, fFL)
 
@@ -533,7 +540,7 @@ def main():
     if not ok:
         print("Exiting due to sensor initialization failure.")
         return
-    time.sleep(20)
+    time.sleep(30)
     driving()
     #motor_test_sequence()
 
