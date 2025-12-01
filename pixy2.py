@@ -7,17 +7,18 @@ from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
 from scipy.signal import medfilt
 import sys
+import pixy
+from pixy import *
+from ctypes import *
 
 # ==========================================================================================================
 # Pixy2 Python module path + imports (USB via SWIG) ========================================================
 # ==========================================================================================================
 
 # Adjust this path if your pixy2 repo is in a different location
-sys.path.append("/home/pi/pixy2/build/python_demos")
+#sys.path.append("/home/pi/pixy2/build/python_demos")
 
 try:
-    import pixy
-    from pixy import BlockArray, VectorArray, line_get_main_features, line_get_vectors, get_frame_width
     pixy_blocks = BlockArray(50)   # up to 50 blocks
     pixy_vectors = VectorArray(10) # up to 10 line vectors
     _pixy_available = True
