@@ -40,6 +40,7 @@ line_get_vectors = None
 get_frame_width = None
 pixy_blocks = None
 pixy_vectors = None
+pixy_vectors_capacity = 0  # SWIG arrays don't support len(), store capacity
 _pixy_available = False
 
 try:
@@ -99,8 +100,10 @@ try:
     if VectorArray is not None:
         try:
             pixy_vectors = VectorArray(10)
+            pixy_vectors_capacity = 10  # Store capacity since len() doesn't work on SWIG arrays
         except Exception:
             pixy_vectors = None
+            pixy_vectors_capacity = 0
 
     # Determine availability
     if pixy_mod is not None and (pixy_blocks is not None or BlockArray is None):
@@ -333,7 +336,7 @@ def robotState(state: int):
 
 def init_pixy2():
     """Initialize Pixy2 camera over USB for LINE DETECTION ONLY."""
-    global pixy_vectors, pixy_mod
+    global pixy_vectors, pixy_mod, pixy_vectors_capacity
     if not _pixy_available:
         print("[WARN] Pixy2 Python module not loaded; skipping Pixy init.")
         return False
@@ -369,8 +372,10 @@ def init_pixy2():
         if pixy_vectors is None and VectorArray is not None:
             try:
                 pixy_vectors = VectorArray(10)
+                pixy_vectors_capacity = 10
             except Exception:
                 pixy_vectors = None
+                pixy_vectors_capacity = 0
 
         fw = None
         if get_frame_width is not None:
@@ -380,6 +385,7 @@ def init_pixy2():
                 fw = None
 
         print(f"[OK] Pixy2 initialized over USB in LINE mode (frame width = {fw})")
+        print(f"[OK] VectorArray capacity: {pixy_vectors_capacity}")
         return True
     except Exception as e:
         print(f"[WARN] Pixy2 not available: {e}")
@@ -396,7 +402,7 @@ def get_pixy_steering():
         mode = "two"  -> using two edges (center between them)
         mode = "one"  -> single line; edge_side in {"left","right"}
     """
-    global pixy_vectors, pixy_mod
+    global pixy_vectors, pixy_mod, pixy_vectors_capacity
 
     if not _pixy_available or pixy_vectors is None:
         return None
@@ -410,12 +416,13 @@ def get_pixy_steering():
         elif hasattr(pixy, "line_get_main_features"):
             pixy.line_get_main_features()
 
+        # Use the stored capacity instead of len() which doesn't work on SWIG arrays
         if line_get_vectors is not None:
-            count = line_get_vectors(len(pixy_vectors), pixy_vectors)
+            count = line_get_vectors(pixy_vectors_capacity, pixy_vectors)
         elif hasattr(pixy_mod, "line_get_vectors"):
-            count = pixy_mod.line_get_vectors(len(pixy_vectors), pixy_vectors)
+            count = pixy_mod.line_get_vectors(pixy_vectors_capacity, pixy_vectors)
         elif hasattr(pixy, "line_get_vectors"):
-            count = pixy.line_get_vectors(len(pixy_vectors), pixy_vectors)
+            count = pixy.line_get_vectors(pixy_vectors_capacity, pixy_vectors)
         else:
             # try from swig module
             import importlib
@@ -428,7 +435,7 @@ def get_pixy_steering():
                 except Exception:
                     _sw = None
             if _sw and hasattr(_sw, "line_get_vectors"):
-                count = _sw.line_get_vectors(len(pixy_vectors), pixy_vectors)
+                count = _sw.line_get_vectors(pixy_vectors_capacity, pixy_vectors)
             else:
                 return None
     except Exception as e:
