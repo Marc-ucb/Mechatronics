@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 import time
-import math
-
-import board            # Blinka pin names for Raspberry Pi
+import numpy as np
+import board  # Blinka pin names for Raspberry Pi
 import busio
 from digitalio import DigitalInOut, Direction
 from adafruit_vl53l0x import VL53L0X
+from scipy.signal import medfilt
+
+# ==========================================================================================================
+# General Setup ============================================================================================
+# ==========================================================================================================
+
 
 # ===== Arduino serial link (edit these) =====
 ARDUINO_PORT = "/dev/ttyACM0"
@@ -14,12 +19,14 @@ ARDUINO_BAUD = 115200
 # Try to open serial; fall back to print-only if not available
 try:
     import serial
+
     _ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.02)
     _serial_ok = True
 except Exception as _e:
     print(f"[warn] Serial not available ({_e}). Will print commands instead.")
     _ser = None
     _serial_ok = False
+
 
 def _send_line(line: str):
     msg = (line.rstrip() + "\n").encode("ascii", errors="ignore")
@@ -32,15 +39,99 @@ def _send_line(line: str):
     else:
         print(line.rstrip())
 
-def send_set_vel_pwm(left_pwm: int, right_pwm: int):
-    """Clamp to [0,255] and send SET_VEL with integer PWM values."""
-    L = max(0, min(255, int(round(left_pwm))))
-    R = max(0, min(255, int(round(right_pwm))))
+
+# -------- Addresses (Right, Left, Front1, Front2) --------
+LOX1_ADDRESS = 0x30  # Right
+LOX2_ADDRESS = 0x31  # Left
+LOX3_ADDRESS = 0x32  # Front1
+LOX4_ADDRESS = 0x33  # Front2
+
+# -------- XSHUT pins --------
+SHT_LOX1_PIN = board.D5  # Right XSHUT
+SHT_LOX2_PIN = board.D17  # Left  XSHUT
+SHT_LOX3_PIN = board.D6  # Front1 XSHUT
+SHT_LOX4_PIN = board.D27  # Front2 XSHUT
+
+# ---- hardware bring-up (VL53L0X) ----
+i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
+
+# XSHUT controls
+xshut1 = DigitalInOut(SHT_LOX1_PIN);
+xshut1.direction = Direction.OUTPUT
+xshut2 = DigitalInOut(SHT_LOX2_PIN);
+xshut2.direction = Direction.OUTPUT
+xshut3 = DigitalInOut(SHT_LOX3_PIN);
+xshut3.direction = Direction.OUTPUT
+xshut4 = DigitalInOut(SHT_LOX4_PIN);
+xshut4.direction = Direction.OUTPUT
+
+# Sensor objects
+lox1 = lox2 = lox3 = lox4 = None
+
+
+def setID():
+    """Bring up and assign unique I2C addresses to all four VL53L0X sensors."""
+    global lox1, lox2, lox3, lox4
+
+    # all reset (XSHUT LOW)
+    for x in (xshut1, xshut2, xshut3, xshut4):
+        x.value = False
+    time.sleep(0.01)
+
+    # Bring up Right -> 0x30
+    xshut1.value = True
+    time.sleep(0.01)
+    lox1 = VL53L0X(i2c)
+    time.sleep(0.01)
+    lox1.set_address(LOX1_ADDRESS)
+    time.sleep(0.01)
+
+    # Left -> 0x31
+    xshut2.value = True
+    time.sleep(0.01)
+    lox2 = VL53L0X(i2c)
+    time.sleep(0.01)
+    lox2.set_address(LOX2_ADDRESS)
+    time.sleep(0.01)
+
+    # Front1 -> 0x32
+    xshut3.value = True
+    time.sleep(0.01)
+    lox3 = VL53L0X(i2c)
+    time.sleep(0.01)
+    lox3.set_address(LOX3_ADDRESS)
+    time.sleep(0.01)
+
+    # Front2 -> 0x33
+    xshut4.value = True
+    time.sleep(0.01)
+    lox4 = VL53L0X(i2c)
+    time.sleep(0.01)
+    lox4.set_address(LOX4_ADDRESS)
+    time.sleep(0.01)
+
+
+# =============================================================================================================
+# Motor constants ======================================================================================
+# =============================================================================================================
+
+full_Speed = 1
+half_Speed = 0.5
+quarter_Speed = 0.25
+three_Quarter_Speed = 0.75
+slow_Speed = 0.1
+
+
+def send_set_vel_pwm(left_pwm, right_pwm):
+    speed = quarter_Speed
+    L = round(left_pwm * speed)
+    R = round(right_pwm * speed)
     _send_line(f"SET_VEL L={L} R={R}")
 
-# =======================
-# Servo helpers (NEW)
-# =======================
+
+# ==========================================================================================================
+# Servo helpers ============================================================================================
+# ==========================================================================================================
 def send_servo_raise(deg: int):
     """
     Counterclockwise relative move by 'deg' (0..180).
@@ -49,6 +140,7 @@ def send_servo_raise(deg: int):
     d = max(0, min(180, int(deg)))
     _send_line(f"SERVO A={d}")
 
+
 def send_servo_lower():
     """
     Clockwise return to the original 'home' angle set before the last raise.
@@ -56,330 +148,421 @@ def send_servo_lower():
     """
     _send_line("SERVO REV")
 
+
 def send_servo_pos():
     """Ask Arduino to print current servo angle (useful for debugging)."""
     _send_line("SERVO POS")
 
-# =======================
-# Tuning (25% speed cap)
-# =======================
-BASE_PWM   = 64          # ~25% of 255
-SLOW_SCALE = 0.60        # front slow-down multiplier when approaching
 
-# Centering controller (PD on (R-L))
-Kp_ERR         = 0.45
-Kd_DERR        = 0.25
-ERR_NORM_MM    = 120.0   # mm -> full-scale for proportional term
-DERR_NORM_MMPS = 400.0   # mm/s -> full-scale for derivative term
-MAX_REDUCTION  = 0.85    # max inside-wheel reduction fraction (0..1)
+# ==========================================================================================================
+# =============================== LOOP START ?? ============================================================
+# ==========================================================================================================
 
-# Tight-arc 90° turn (timed) – keep at 25% overall
-TURN_OUTER_PWM   = 64
-TURN_INNER_SCALE = 0.35
-TURN_MS_90       = 650
 
-# -------- Addresses (Right, Left, Front1, Front2) --------
-LOX1_ADDRESS = 0x30   # Right
-LOX2_ADDRESS = 0x31   # Left
-LOX3_ADDRESS = 0x32   # Front1
-LOX4_ADDRESS = 0x33   # Front2
+# state of machine --> motor commands   In loop or out of loop?
+def robotState(state: int, l, r):
+    steady = 255
+    half = 255 / 2
+    quarter = 255 / 4
 
-# -------- XSHUT pins --------
-SHT_LOX1_PIN = board.D5    # Right XSHUT
-SHT_LOX2_PIN = board.D17   # Left  XSHUT
-SHT_LOX3_PIN = board.D6    # Front1 XSHUT
-SHT_LOX4_PIN = board.D27   # Front2 XSHUT
+    match state:
+        case 1:
+            # Obstacle
+            # try adjusting left and analyze
+            # try adjusting right and analyze
+            # reassess center
 
-# -------- Measurement struct analog --------
+            # motors stop
+            # 90 degree left
+            # forward half the distance of l
+            # 90 degree right
+            # analyze
+
+            # motors stop
+            # 90 degree right
+            # forward half the distance of l + half distance of r
+            # 90 degree left
+            # analyze
+
+            # motors stop
+            # 90 degree left
+            # forward half the distance of r
+            # 90 degree right
+            # analyze
+            state_history(1)
+            pass
+
+        case 2:
+            # Straight
+            # even motor commands
+            send_set_vel_pwm(steady, steady)
+            state_history(2)
+
+        case 3:
+            # Left slope
+            # adjust left
+
+            # right motor same speed
+            # left motor decrease by half
+            send_set_vel_pwm(255 - quarter, steady)
+            state_history(3)
+
+        case 4:
+            # Right slope
+            # adjust right
+
+            # left motor same speed
+            # right motor decrease by half
+            send_set_vel_pwm(steady, 255 - quarter)
+            state_history(4)
+
+        case 5:
+            # Adjust right
+            # turn right then left to straighten
+
+            # left motor same speed
+            # right motor decrease by 1/4
+            # left motor decrease by half
+            # both motors stable
+            send_set_vel_pwm(steady, 255 - quarter)
+            time.sleep(0.25)
+            send_set_vel_pwm(255 - half, 255 - quarter)
+            time.sleep(0.25)
+            send_set_vel_pwm(steady, steady)
+            state_history(5)
+
+        case 6:
+            # Adjust left
+            # turn left then right to straighten
+
+            # right motor same speed
+            # left motor decrease by 1/4
+            # right motor decrease by half
+            # both motors stable
+            send_set_vel_pwm(255 - quarter, steady)
+            time.sleep(0.25)
+            send_set_vel_pwm(255 - quarter, 255 - half)
+            time.sleep(0.25)
+            send_set_vel_pwm(steady, steady)
+            state_history(6)
+
+        case 7:
+            # Right90
+            # Stop -- 90 degree to the right - go straight
+
+            # motors stop
+            # right motor pulse forward
+            # left motor pulse backwards
+            # both motors forward
+            send_set_vel_pwm(half, half)
+            time.sleep(0.01)
+            send_set_vel_pwm(0, 0)
+            time.sleep(0.01)
+            send_set_vel_pwm(-10,
+                             steady)  # arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
+            time.sleep(
+                .25)  # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(steady, steady)
+            state_history(7)
+
+        case 8:
+            # Left90
+            # stop -- 90 degrees to the left - go straight
+
+            # motors stop
+            # left motor pulse forward
+            # right motor pulse backwards
+            # both motors forward
+            send_set_vel_pwm(half, half)
+            time.sleep(0.01)
+            send_set_vel_pwm(0, 0)
+            time.sleep(0.01)
+            send_set_vel_pwm(steady,
+                             -10)  # arduino code needs to be updated if speed is negative = digital right reverse at same speed as other side
+            time.sleep(
+                .25)  # ===================== use this to dial 90 degree turns =====================================
+            send_set_vel_pwm(steady, steady)
+            state_history(8)
+
+        case 9:
+            # Obstacle: fr > 400 or OOR, fl < 400
+            state_history(9)
+            pass
+
+        case 10:
+            # Obstacle: fl > 400 or OOR, fr < 400
+            state_history(10)
+            pass
+
+        case 11:
+            # Bridge
+            send_servo_raise(180)
+
+            # motor commands
+
+            send_servo_lower()
+            state_history(11)
+            pass
+
+        case 12:
+            # Ramp
+            send_servo_raise(180)
+
+            # motor commands
+
+            send_servo_lower()
+            state_history(12)
+            pass
+
+        case 13:
+            # gravel
+            send_servo_raise(180)
+
+            # motor commands
+
+            send_servo_lower()
+            state_history(13)
+            pass
+
+        case _:
+            # Unknown / default
+            pass
+
+
+previous_states = []
+
+
+# history of states - no double 90 in the same direction
+def state_history(state: int):
+    previous_states.append(state)
+    if len(previous_states) > 10:
+        previous_states.pop(0)
+    print("History:", previous_states)
+
+
+# ==========================================================================================================
+# Backup IR  ===============================================================================================
+# ==========================================================================================================
+
+
+# ==========================================================================================================
+# Pixy Code  ===============================================================================================
+# ==========================================================================================================
+
+
+# =============================================================================================================
+# TOF Sensor Logic ============================================================================================
+# =============================================================================================================
 class Measurement:
-    __slots__ = ("RangeMilliMeter", "RangeStatus")
+    __slots__ = ("RangeMM", "RangeStatus")
+
     def __init__(self, mm=0, status=4):
-        self.RangeMilliMeter = mm
+        self.RangeMM = mm
         self.RangeStatus = status  # 0=ok; 4=OOR (emulated)
 
-def present(m: Measurement) -> bool:
-    return m.RangeStatus != 4
-
-def millis() -> int:
-    return int(time.monotonic() * 1000.0)
 
 def _apply_speed_scale_pwm(pwm: float, scale: float) -> int:
     return max(0, min(255, int(round(pwm * scale))))
 
-# ---- hardware bring-up (VL53L0X) ----
-i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
-
-# XSHUT controls
-xshut1 = DigitalInOut(SHT_LOX1_PIN); xshut1.direction = Direction.OUTPUT
-xshut2 = DigitalInOut(SHT_LOX2_PIN); xshut2.direction = Direction.OUTPUT
-xshut3 = DigitalInOut(SHT_LOX3_PIN); xshut3.direction = Direction.OUTPUT
-xshut4 = DigitalInOut(SHT_LOX4_PIN); xshut4.direction = Direction.OUTPUT
-
-# Sensor objects
-lox1 = lox2 = lox3 = lox4 = None
 
 def safe_read_sensor(sensor: VL53L0X) -> Measurement:
     try:
         mm = int(sensor.range)
-        if 20 <= mm <= 2000:
+        if 20 <= mm <= 1500:
             return Measurement(mm=mm, status=0)
         else:
-            return Measurement(mm=mm, status=4)
+            return Measurement(mm=9000, status=4)
     except Exception:
-        return Measurement(mm=0, status=4)
+        return Measurement(mm=9000, status=4)
 
-def setID():
-    global lox1, lox2, lox3, lox4
-    # all reset (XSHUT LOW)
-    for x in (xshut1, xshut2, xshut3, xshut4):
-        x.value = False
-    time.sleep(0.01)
 
-    # Bring up Right -> 0x30
-    xshut1.value = True; time.sleep(0.01)
-    lox1 = VL53L0X(i2c); time.sleep(0.01); lox1.set_address(LOX1_ADDRESS); time.sleep(0.01)
+# helper: collect 3 valid readings from ONE sensor
+def collect_sensor_data(sensor, delay_s=0.02):
+    """
+    Use safe_read_sensor(sensor) to collect 3 valid readings (RangeMM)
+    and return them as a 1D NumPy array.
+    """
+    values = []
+    while len(values) < 3:
+        m = safe_read_sensor(sensor)  # your existing function
+        if m.RangeStatus == 0:  # only use valid readings
+            values.append(m.RangeMM)
+        time.sleep(delay_s)
+    return np.array(values, dtype=float)
 
-    # Left -> 0x31
-    xshut2.value = True; time.sleep(0.01)
-    lox2 = VL53L0X(i2c); time.sleep(0.01); lox2.set_address(LOX2_ADDRESS); time.sleep(0.01)
 
-    # Front1 -> 0x32
-    xshut3.value = True; time.sleep(0.01)
-    lox3 = VL53L0X(i2c); time.sleep(0.01); lox3.set_address(LOX3_ADDRESS); time.sleep(0.01)
+# decision-making based on filtered sensor data
+# Interpret data / assign triggers
+def interpret_data(r, l, fr, fl):
+    # r  = right sensor (mm or 9000 for OOR)
+    # l  = left sensor  (mm or 9000 for OOR)
+    # fr = front-right  (mm or 9000 for OOR)
+    # fl = front-left   (mm or 9000 for OOR)
 
-    # Front2 -> 0x33
-    xshut4.value = True; time.sleep(0.01)
-    lox4 = VL53L0X(i2c); time.sleep(0.01); lox4.set_address(LOX4_ADDRESS); time.sleep(0.01)
+    # Right & left roughly equal (within 100mm)
+    sides_equal = (r != 9000 and l != 9000 and abs(r - l) <= 100)
 
-    # Warm-up a couple readings
-    for _ in range(2):
-        _ = safe_read_sensor(lox1)
-        _ = safe_read_sensor(lox2)
-        _ = safe_read_sensor(lox3)
-        _ = safe_read_sensor(lox4)
-        time.sleep(0.05)
+    # Front roughly equal (within 100mm)
+    fronts_equal = ((fr != 9000 and fl != 9000 and abs(fr - fl) <= 150) or (fr == 9000 and fl == 9000))
 
-# ===== Sampling / Filters / State =====
-SAMPLE_PERIOD_MS = 90  # ~11 Hz
-ALPHA = 0.20           # EMA
+    # Front both > 400mm
+    fronts_far = ((fr == 9000 or fr > 400) and (fl == 9000 or fl > 400))
 
-lastSampleMs = 0
+    # Front both < 400mm
+    fronts_near = ((fr != 9000 and fr < 400) and (fl != 9000 and fl < 400))
 
-# (R-L) EMA and derivative
-diffFilt = float("nan")
-prevDiffFilt = float("nan")
+    # Front Slant
+    slant = ((fr != 9000 and fl != 9000) and abs(fr - fl) >= 150)
 
-# Front average EMA and derivative
-frontFilt = float("nan")
-prevFrontFilt = float("nan")
+    # ------------------------------------------------------------------
+    # right and left sensors roughly equal (within 100mm)
+    # front sensors roughly equal and < 400mm
+    if sides_equal and fronts_equal and fronts_near:
+        # Stop - Obstacle
+        # state = Obstacle
+        robotState(1, l, r)
 
-# -------- Corner/Collision thresholds --------
-FRONT_FAST_MMPS    = -900.0  # very fast approach
-FRONT_CREEP_MM     = 500.0   # begin creep/probe when closer than this
-FRONT_HARD_STOP_MM = 260.0   # never drive forward closer than this
-FRONT_CREEP_PWM    = 28      # very low crawl while probing
-SIDE_BIG_MM        = 1200.0  # a side suddenly “far/open”
-CREEP_TIMEOUT_MS   = 900     # after arming, commit a turn if no open side
+    # right and left sensors roughly equal (within 100mm)
+    # front sensors not equal and < 400mm
+    elif sides_equal and ((fr > 400 or fr == 9000) and fl < 400):
+        # Stop - Obstacle
+        # state = Obstacle
+        robotState(9, l, r)
 
-# ---- main sensing/decision loop (ONLY emits SET_VEL with PWM) ----
-def read_dual_sensors():
-    global lastSampleMs, diffFilt, prevDiffFilt, frontFilt, prevFrontFilt
+    # right and left sensors roughly equal (within 100mm)
+    # front sensors not equal and < 400mm
+    elif sides_equal and ((fl > 400 or fl == 9000) and fr < 400):
+        # Stop - Obstacle
+        # state = Obstacle
+        robotState(10, l, r)
 
-    now = millis()
-    if (now - lastSampleMs) < SAMPLE_PERIOD_MS:
-        return
-    dt_ms = now - lastSampleMs if lastSampleMs != 0 else SAMPLE_PERIOD_MS
-    lastSampleMs = now
-    dt = float(dt_ms) / 1000.0
+    # right and left sensors roughly equal (within 100mm)
+    # front sensors roughly equal and > 400mm
+    elif sides_equal and fronts_equal and fronts_far:
+        # Robot stays straight
+        # state = straight
+        robotState(2, l, r)
 
-    # read sensors
-    mR = safe_read_sensor(lox1)  # Right
-    mL = safe_read_sensor(lox2)  # Left
-    mF1 = safe_read_sensor(lox3) # Front1
-    mF2 = safe_read_sensor(lox4) # Front2
+    # right and left sensors roughly equal (within 100mm)
+    # front left > front right and > 400mm
+    elif sides_equal and slant and (fl > fr) and (fl > 400):
+        # Approaching left hand slope turn
+        # state = left slope
+        robotState(3, l, r)
 
-    # -------- Compute (R-L) EMA and derivative --------
-    err_present = False
-    derr = 0.0
-    if present(mR) and present(mL):
-        err_present = True
-        currDiff = float(mR.RangeMilliMeter - mL.RangeMilliMeter)  # mm
-        if math.isnan(diffFilt):
-            diffFilt = currDiff
-            prevDiffFilt = diffFilt
-            derr = 0.0
-        else:
-            prevDiffFilt = diffFilt
-            diffFilt = ALPHA * currDiff + (1.0 - ALPHA) * diffFilt
-            derr = (diffFilt - prevDiffFilt) / dt  # mm/s
+    # right and left sensors roughly equal (within 100mm)
+    # front left < front right and > 400mm
+    elif sides_equal and slant and (fl < fr) and (fr > 400):
+        # Approaching right hand slope turn
+        # state =  right slope
+        robotState(4, l, r)
 
-    # -------- Front average EMA and derivative --------
-    front_present = False
-    sFront = 0.0
-    if present(mF1) or present(mF2):
-        front_present = True
-        if present(mF1) and present(mF2):
-            front_raw = 0.5 * (mF1.RangeMilliMeter + mF2.RangeMilliMeter)
-        else:
-            front_raw = float(mF1.RangeMilliMeter if present(mF1) else mF2.RangeMilliMeter)
+    # right sensor > left sensor (greater than 100mm but less than 400mm)
+    # front sensors roughly equal and > 400mm
+    elif (r != 9000 and l != 9000 and (r - l) > 100 and (r - l) < 400) and fronts_equal and fronts_far:
+        # Adjust to the right until roughly equal then straighten
+        # state = adjust right
+        robotState(5, l, r)
 
-        if math.isnan(frontFilt):
-            frontFilt = front_raw
-            prevFrontFilt = frontFilt
-            sFront = 0.0
-        else:
-            prevFrontFilt = frontFilt
-            frontFilt = ALPHA * front_raw + (1.0 - ALPHA) * frontFilt
-            sFront = (frontFilt - prevFrontFilt) / dt  # mm/s
+    # right sensor < left sensor (greater than 100mm)
+    # front sensors roughly equal and > 400mm
+    elif (r != 9000 and l != 9000 and (l - r) > 100 and (l - r) < 400) and fronts_equal and fronts_far:
+        # Adjust to the left until roughly equal then straighten
+        # state = adjust left
+        robotState(6, l, r)
 
-    # ------------------------------
-    # Turn state (timed arc at 25%)
-    # ------------------------------
-    if read_dual_sensors.turn_active:
-        if now >= read_dual_sensors.turn_end_ms:
-            # clear both turn and corner states
-            read_dual_sensors.turn_active = False
-            read_dual_sensors.turn_end_ms = 0
-            read_dual_sensors.turn_dir = 0
-            read_dual_sensors.corner_armed = False
-            read_dual_sensors.corner_armed_ms = 0
-            read_dual_sensors.last_turn_hint = 0
-        else:
-            outer = TURN_OUTER_PWM
-            inner = max(0, min(255, int(round(outer * TURN_INNER_SCALE))))
-            if read_dual_sensors.turn_dir > 0:  # RIGHT
-                send_set_vel_pwm(outer, inner)
-            else:                                # LEFT
-                send_set_vel_pwm(inner, outer)
-            return
+    # ------------------------------------------------------------------
+    # right sensor > left sensor (right sensor greater than 400mm or out of range)
+    # front sensors roughly equal and < 400mm
+    elif fronts_equal and fronts_near and (
+            (r == 9000 and l != 9000) or (r != 9000 and l != 9000 and r > l and r > 400)):
+        # stop - 90 degree turn to the right - continue straight
+        # state = Right90
+        robotState(7, l, r)
 
-    # ----------------------------------------------------
-    # Corner arming: creep & probe, stop, then commit turn
-    # ----------------------------------------------------
-    # Arm corner behavior if approaching fast and within creep zone
-    if front_present and (sFront <= FRONT_FAST_MMPS) and (frontFilt <= FRONT_CREEP_MM):
-        if not read_dual_sensors.corner_armed:
-            read_dual_sensors.corner_armed = True
-            read_dual_sensors.corner_armed_ms = now
-        # keep a turn hint: which side looks more open? (R-L >= 0 -> more space on right)
-        if err_present:
-            read_dual_sensors.last_turn_hint = (+1 if diffFilt >= 0 else -1)
+    # right sensor > left sensor ( right sensor greater than 400mm or out of range)
+    # front sensors roughly equal and > 400mm
+    elif fronts_equal and fronts_far and ((r == 9000 and l != 9000) or (r != 9000 and l != 9000 and r > l and r > 400)):
+        # continue straight
+        # state = straight
+        robotState(2, l, r)
 
-    # If armed, either creep, stop, or commit to turn
-    if read_dual_sensors.corner_armed:
-        # If dangerously close, STOP and commit immediately
-        if front_present and frontFilt <= FRONT_HARD_STOP_MM:
-            right_open = (not present(mR)) or (present(mR) and mR.RangeMilliMeter >= SIDE_BIG_MM)
-            left_open  = (not present(mL)) or (present(mL) and mL.RangeMilliMeter >= SIDE_BIG_MM)
-            if right_open and not left_open:
-                dir_sel = +1
-            elif left_open and not right_open:
-                dir_sel = -1
-            elif right_open and left_open:
-                dir_sel = (+1 if (err_present and diffFilt >= 0) else -1)
-            else:
-                dir_sel = (read_dual_sensors.last_turn_hint or (+1 if (err_present and diffFilt >= 0) else -1))
+    # right sensor < left sensor (left sensor greater than 400mm or out of range)
+    # front sensors roughly equal and < 400mm
+    elif fronts_equal and fronts_near and (
+            (l == 9000 and r != 9000) or (l != 9000 and r != 9000 and l > r and l > 400)):
+        # stop - 90 degree turn to the left - continue straight
+        # state = left90
+        robotState(8, l, r)
 
-            send_set_vel_pwm(0, 0)  # hard stop
-            read_dual_sensors.turn_active = True
-            read_dual_sensors.turn_end_ms = now + TURN_MS_90
-            read_dual_sensors.turn_dir = dir_sel
-            return
+    # right sensor < left sensor (left sensor greater than 400mm or out of range)
+    # front sensors roughly equal and > 400mm
+    elif fronts_equal and fronts_far and ((l == 9000 and r != 9000) or (l != 9000 and r != 9000 and l > r and l > 400)):
+        # continue straight
+        # state = straight
+        robotState(2, l, r)
 
-        # If a side opens before hard-stop, commit to that turn
-        right_open = (present(mR) and mR.RangeMilliMeter >= SIDE_BIG_MM) or (not present(mR))
-        left_open  = (present(mL) and mL.RangeMilliMeter >= SIDE_BIG_MM) or (not present(mL))
-        if right_open ^ left_open:  # exactly one side open
-            dir_sel = (+1 if right_open else -1)
-            read_dual_sensors.turn_active = True
-            read_dual_sensors.turn_end_ms = now + TURN_MS_90
-            read_dual_sensors.turn_dir = dir_sel
-            outer = TURN_OUTER_PWM
-            inner = max(0, min(255, int(round(outer * TURN_INNER_SCALE))))
-            if dir_sel > 0:
-                send_set_vel_pwm(outer, inner)
-            else:
-                send_set_vel_pwm(inner, outer)
-            return
+    # right sensor and left sensor greater than 400mm or out of range
+    # front sensors roughly equal and > 400mm
+    elif ((r == 9000 or r > 400) and (l == 9000 or l > 400)) and fronts_equal and fronts_far:
+        # stay straight
+        # state = straight
+        robotState(2, l, r)
 
-        # If we’ve been creeping for a while with no open side, stop & commit using hint
-        if now - read_dual_sensors.corner_armed_ms >= CREEP_TIMEOUT_MS:
-            dir_sel = (read_dual_sensors.last_turn_hint or (+1 if (err_present and diffFilt >= 0) else -1))
-            send_set_vel_pwm(0, 0)  # brief stop before arc
-            read_dual_sensors.turn_active = True
-            read_dual_sensors.turn_end_ms = now + TURN_MS_90
-            read_dual_sensors.turn_dir = dir_sel
-            return
+    # right sensor and left sensor greater than 400mm or out of range
+    # front sensors roughly equal and < 400mm
+    elif ((r == 9000 or r > 400) and (l == 9000 or l > 400)) and fronts_equal and fronts_near:
+        # turn right
+        # state = right90
+        robotState(7, l, r)
 
-        # Otherwise: creep forward very slowly and keep centering
-        creep_pwm = FRONT_CREEP_PWM
-        if err_present:
-            # PD centering at creep speed
-            e_term = (diffFilt / ERR_NORM_MM) if ERR_NORM_MM > 0 else 0.0
-            d_term = (derr     / DERR_NORM_MMPS) if DERR_NORM_MMPS > 0 else 0.0
-            u = (Kp_ERR * e_term) + (Kd_DERR * d_term)
-            red = max(0.0, min(MAX_REDUCTION, abs(u)))
-            if u >= 0:
-                left, right = creep_pwm, int(round(creep_pwm * (1.0 - red)))
-            else:
-                left, right = int(round(creep_pwm * (1.0 - red))), creep_pwm
-            send_set_vel_pwm(left, right)
-        else:
-            send_set_vel_pwm(creep_pwm, creep_pwm)
-        return
 
-    # =========================================================
-    # Normal: Centering PD (no reversing) at 25% speed
-    # =========================================================
-    speed_scale = 1.0
-    if front_present and sFront < 0:
-        speed_scale = SLOW_SCALE
-    base = _apply_speed_scale_pwm(BASE_PWM, speed_scale)
-
-    # Safety: never drive forward inside hard-stop
-    if front_present and frontFilt <= FRONT_HARD_STOP_MM:
-        send_set_vel_pwm(0, 0)
-        # arm for next loop so we will commit a turn promptly
-        if not read_dual_sensors.corner_armed:
-            read_dual_sensors.corner_armed = True
-            read_dual_sensors.corner_armed_ms = now
-            if err_present:
-                read_dual_sensors.last_turn_hint = (+1 if diffFilt >= 0 else -1)
-        return
-
-    if err_present:
-        e_term = (diffFilt / ERR_NORM_MM) if ERR_NORM_MM > 0 else 0.0
-        d_term = (derr     / DERR_NORM_MMPS) if DERR_NORM_MMPS > 0 else 0.0
-        u = (Kp_ERR * e_term) + (Kd_DERR * d_term)
-        red = max(0.0, min(MAX_REDUCTION, abs(u)))
-        if u >= 0:
-            left  = base
-            right = int(round(base * (1.0 - red)))
-        else:
-            left  = int(round(base * (1.0 - red)))
-            right = base
-        send_set_vel_pwm(left, right)
-    else:
-        send_set_vel_pwm(base, base)
-
-def main():
-    print("Starting (25% speed, PD-centering, creep+stop+commit corners)…")
-    setID()
-
-    global lastSampleMs
-    lastSampleMs = millis()
-
+def driving():
     while True:
-        read_dual_sensors()
+        # call backup IR
 
-# ---- initialize per-callable state AFTER the function is defined ----
-read_dual_sensors.turn_active = False
-read_dual_sensors.turn_end_ms = 0
-read_dual_sensors.turn_dir = 0      # -1 = LEFT, +1 = RIGHT
+        # call pixy
 
-read_dual_sensors.corner_armed = False
-read_dual_sensors.corner_armed_ms = 0
-read_dual_sensors.last_turn_hint = 0  # -1 L, +1 R
+        # read raw sensor data / collect 3 readings per sensor in array
+        arrR, arrL, arrFR, arrFL = [], [], [], []
+
+        for _ in range(3):
+            mR = safe_read_sensor(lox1)  # Right
+            mL = safe_read_sensor(lox2)  # Left
+            mFR = safe_read_sensor(lox3)  # Front1
+            mFL = safe_read_sensor(lox4)  # Front2
+
+            # append all readings, including OOR (9000)
+            arrR.append(mR.RangeMM)
+            arrL.append(mL.RangeMM)
+            arrFR.append(mFR.RangeMM)
+            arrFL.append(mFL.RangeMM)
+
+        # convert to NumPy arrays
+        arrR = np.array(arrR, dtype=float)
+        arrL = np.array(arrL, dtype=float)
+        arrFR = np.array(arrFR, dtype=float)
+        arrFL = np.array(arrFL, dtype=float)
+
+        # median filter over the 3 samples
+        fR = medfilt(arrR, kernel_size=3)[-1]
+        fL = medfilt(arrL, kernel_size=3)[-1]
+        fFR = medfilt(arrFR, kernel_size=3)[-1]
+        fFL = medfilt(arrFL, kernel_size=3)[-1]
+
+        # decision logic
+        interpret_data(fR, fL, fFR, fFL)
+
+
+# ==========================================================================================================
+# Main =====================================================================================================
+# ==========================================================================================================
+def main():
+    print("Starting with TOF logic cleared (setup + servo + motor send intact)…")
+    setID()
+    time.sleep(10)
+    driving()
+
 
 if __name__ == "__main__":
     try:

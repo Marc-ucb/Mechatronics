@@ -202,10 +202,7 @@ def robotState(state: int):
             send_set_vel_pwm(0,0)
             time.sleep(0.1)
             send_set_vel_pwm(-100, -100)
-            time.sleep(.5)
-            send_set_vel_pwm(100, 100)
-            time.sleep(0.1)
-            send_set_vel_pwm(0, 0)
+            time.sleep(.25)
             state_history(1)
 
 

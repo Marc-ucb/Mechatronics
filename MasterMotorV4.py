@@ -376,47 +376,62 @@ def safe_read(sensor, name):
 
 def interpret_data(r, l, fr, fl):
     """
-    Original TOF-based decision making, now with optional Pixy2 steering assist.
+    Combined ToF + Pixy2 decision:
+      - ToF = safety + coarse structure (obstacles, sharp turns)
+      - Pixy2 = fine steering when line is visible
     """
-    full = 255
+    # ---------- 1) Emergency / hard constraints from ToF ----------
+    # Front hard-stop thresholds
+    if fr < 170 or fl < 170 or r < 40 or l < 40:
+        robotState(1)  # obstacle routine overrides everything
+        return
 
-    # Front both < 200mm
-    fronts_near = ((fr < 230) and (fl < 230))
-
-    # Front Slant
+    fronts_near = (fr < 230 and fl < 230)
     slant = abs(fr - fl) >= 400
 
-    # 90 degree turns
+    # ---------- 2) Look for 90°-turn situations from ToF ----------
     if abs(r - l) > 200 and fronts_near:
         if previous_states and previous_states[-1] in (2, 3):
+            # just turned; don't immediately re-trigger
             return
 
         if r > l:
-            robotState(2)
-            return
+            robotState(2)  # Right 90
+        else:
+            robotState(3)  # Left 90
+        return  # 90° turn overrides line following for this cycle
 
-        elif r < l:
-            robotState(3)
-            return
-
-    # Try Pixy2 steering first
+    # ---------- 3) Get Pixy steering if available ----------
     pixy_correction = get_pixy_steering()
 
-    if pixy_correction is not None:
-        # Pixy2 is tracking both lines - use it for steering
-        base_speed = 150
-        left_speed = base_speed + pixy_correction
-        right_speed = base_speed - pixy_correction
+    base_speed = 150
+    left_speed  = base_speed
+    right_speed = base_speed
 
-        # Constrain speeds
-        left_speed = max(50, min(200, left_speed))
+    if pixy_correction is not None:
+        # Use Pixy for fine steering
+        left_speed  += pixy_correction
+        right_speed -= pixy_correction
+
+        # ---------- 4) Use ToF to fence Pixy steering ----------
+        # Example: if right side is very close, don't allow hard right turn
+        if r < 100:
+            # force robot to steer slightly left / reduce rightward turn
+            right_speed = max(right_speed, base_speed - 20)
+
+        if l < 100:
+            # force robot to steer slightly right / reduce leftward turn
+            left_speed = max(left_speed, base_speed - 20)
+
+        # Clip speeds
+        left_speed  = max(50, min(200, left_speed))
         right_speed = max(50, min(200, right_speed))
 
         send_set_vel_pwm(int(left_speed), int(right_speed))
-        state_history(20)  # New state for Pixy2 steering
+        state_history(20)  # Pixy-based steering with ToF guardrails
         return
 
-    # Fallback to original TOF-based steering
+    # ---------- 5) Fallback: ToF-only steering ----------
     if abs(r - l) >= 50 or slant:
         if r > l:
             send_set_vel_pwm(10, 200)

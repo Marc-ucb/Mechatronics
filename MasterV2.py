@@ -383,10 +383,10 @@ def driving():
             # E_stop = True
 
         # ----- sliding window of length 3 for each sensor -----
-        arrR.pop(0); arrR.append(mR)
-        arrL.pop(0); arrL.append(mL)
-        arrFR.pop(0); arrFR.append(mFR)
-        arrFL.pop(0); arrFL.append(mFL)
+        np.delete(arrR,0); arrR.append(mR)
+        np.delete(arrL,0); arrL.append(mL)
+        np.delete(arrFR,0); arrFR.append(mFR)
+        np.delete(arrFL, 0); arrFL.append(mFL)
 
 
         # convert to NumPy arrays
