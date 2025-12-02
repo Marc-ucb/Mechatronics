@@ -214,8 +214,7 @@ def robotState(state: int):
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(-full, full)
-            time.sleep(
-                .5)  # ===================== use this to dial 90 degree turns =====================================
+            time.sleep(0.5)  # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0, 0)
 
             state_history(2)
@@ -227,8 +226,7 @@ def robotState(state: int):
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(full, -full)
-            time.sleep(
-                0.4)  # ===================== use this to dial 90 degree turns =====================================
+            time.sleep(0.4)  # ===================== use this to dial 90 degree turns =====================================
             send_set_vel_pwm(0, 0)
 
             state_history(3)
@@ -298,12 +296,12 @@ FOLLOW_RIGHT = 1
 follow_mode = FOLLOW_LEFT  # start by following LEFT wall
 
 # Desired wall-follow parameters (mm)
-TARGET_WALL_DIST_MM = 120     # desired distance from wall
-WALL_DIST_TOL_MM = 20         # +/- band
-LEFT_WALL_LOST_MM = 400       # if L > this, treat left wall as "lost"
+TARGET_WALL_DIST_MM = 110    # desired distance from wall
+WALL_DIST_TOL_MM = 15         # +/- band
+LEFT_WALL_LOST_MM = 300       # if L > this, treat left wall as "lost"
 
 STRAIGHT_PWM = 150
-TURN_FAST_PWM = 225
+TURN_FAST_PWM = 200
 TURN_SLOW_PWM = 10
 
 
@@ -360,11 +358,11 @@ def interpret_data(r, l, fr, fl):
     # ---------------------------------------
     # Front obstacle / 90 degree turn logic
     # ---------------------------------------
-    fronts_near = ((fr < 350) and (fl < 350))
+    fronts_near = ((fr < 400) and (fl < 400))
     slant = abs(fr - fl) >= 300  # still available if you want to tune later
 
     # 90 degree turns (unchanged behavior)
-    if abs(r - l) > 100 and fronts_near:
+    if abs(r - l) > 300 and fronts_near:
         # If last state was 2 (Right90) or 3 (Left90) → skip this block
         if previous_states and previous_states[-1] in (2, 3):
             return
@@ -466,7 +464,7 @@ def driving():
         mFR = safe_read(lox3, "Front1")
         mFL = safe_read(lox4, "Front2")
 
-        if mFR < 170 or mFL < 170 or mR < 40 or mL < 40:  # ===========  EMERGENCY STOP CONDITIONS  ============
+        if mFR < 180 or mFL < 180 or mR < 40 or mL < 40:  # ===========  EMERGENCY STOP CONDITIONS  ============
             robotState(1)
             # E_stop = True
 
