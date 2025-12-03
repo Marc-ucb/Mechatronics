@@ -14,26 +14,30 @@ try:
     import serial
     _ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.02)
     _serial_ok = True
-    print(f"[INFO] Serial OK on {ARDUINO_PORT}")
 except Exception as e:
-    print(f"[ERROR] Serial not available: {e}")
+    print(f"[warn] Serial not available ({e}). Will print commands instead.")
     _ser = None
     _serial_ok = False
 
 
-def send_motor_command(left_pwm, right_pwm):
-    """Send motor command to Arduino."""
-    L = round(left_pwm)
-    R = round(right_pwm)
-    msg = f"SET_VEL L={L} R={R}\n".encode("ascii")
-    
+def _send_line(line: str):
+    """Send a line to Arduino serial."""
+    msg = (line.rstrip() + "\n").encode("ascii", errors="ignore")
     if _serial_ok and _ser is not None:
         try:
             _ser.write(msg)
         except Exception as e:
-            print(f"[ERROR] Serial write failed: {e}")
+            print(f"[serial err] {e}. Falling back to print.")
+            print(line.rstrip())
     else:
-        print(f"SET_VEL L={L} R={R}")
+        print(line.rstrip())
+
+
+def send_motor_command(left_pwm, right_pwm):
+    """Send motor command to Arduino (matches main code format)."""
+    L = round(left_pwm)
+    R = round(right_pwm)
+    _send_line(f"SET_VEL L={L} R={R}")
 
 
 # ==========================================================================================================
