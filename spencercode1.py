@@ -228,8 +228,8 @@ def interpret_data(r, l, fr, fl):
         right_open = r > 350
         left_open = l > 350
         
-        print(f"  → Right: {'OPEN' if right_open else 'CLOSED'} ({r}mm)")
-        print(f"  → Left: {'OPEN' if left_open else 'CLOSED'} ({l}mm)")
+        print(f"  → Right: {'OPEN' if right_open else 'CLOSED'} ({r:.0f}mm)")
+        print(f"  → Left: {'OPEN' if left_open else 'CLOSED'} ({l:.0f}mm)")
         
         if right_open and not left_open:
             print("  → DECISION: Turn RIGHT")
@@ -246,10 +246,10 @@ def interpret_data(r, l, fr, fl):
         elif right_open and left_open:
             # Both open - choose the more open side
             if r > l + 100:
-                print(f"  → DECISION: Turn RIGHT (larger gap: {r} vs {l})")
+                print(f"  → DECISION: Turn RIGHT (larger gap: {r:.0f} vs {l:.0f})")
                 turn_right()
             else:
-                print(f"  → DECISION: Turn LEFT (larger gap: {l} vs {r})")
+                print(f"  → DECISION: Turn LEFT (larger gap: {l:.0f} vs {r:.0f})")
                 turn_left()
             consecutive_stalls = 0
             return
