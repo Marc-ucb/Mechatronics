@@ -77,47 +77,65 @@ def main():
     error_count = 0
     max_errors = 5
     iteration = 0
+    last_iteration_time = time.time()
     
     while True:
         try:
             iteration += 1
-            print(f"\n[ITER {iteration}] --- Starting iteration ---")
+            current_time = time.time()
+            time_since_last = current_time - last_iteration_time
+            
+            print(f"\n[ITER {iteration}] --- Starting iteration (time since last: {time_since_last:.3f}s) ---")
+            
+            if time_since_last > 2.0:
+                print(f"[WARNING] Large gap between iterations! Possible hang/block detected.")
+            
+            step_start = time.time()
             
             # Step 1: Read sensors
             print(f"[ITER {iteration}] Reading IR sensors...")
             left_on_track, right_on_track = read_ir_sensors()
-            print(f"[ITER {iteration}] Sensors read: left={left_on_track}, right={right_on_track}")
+            step_time = time.time() - step_start
+            print(f"[ITER {iteration}] Sensors read ({step_time:.3f}s): left={left_on_track}, right={right_on_track}")
+            
+            if step_time > 0.5:
+                print(f"[WARNING] Sensor read took {step_time:.3f}s - unusually slow!")
             
             # Step 2: Determine action
             print(f"[ITER {iteration}] Determining action...")
+            step_start = time.time()
             
             # Both sensors on track -> GO STRAIGHT
             if left_on_track and right_on_track:
                 print(f"[ITER {iteration}] Decision: Both ON track -> STRAIGHT (200, 200)")
                 print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(200, 200)
-                print(f"[ITER {iteration}] Motor command sent successfully")
+                step_time = time.time() - step_start
+                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
             
             # Left on track, Right off track -> TOO FAR RIGHT -> NUDGE LEFT
             elif left_on_track and not right_on_track:
                 print(f"[ITER {iteration}] Decision: Right OFF track -> NUDGE LEFT (-80, 80)")
                 print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(-80, 80)
-                print(f"[ITER {iteration}] Motor command sent successfully")
+                step_time = time.time() - step_start
+                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
             
             # Right on track, Left off track -> TOO FAR LEFT -> NUDGE RIGHT
             elif right_on_track and not left_on_track:
                 print(f"[ITER {iteration}] Decision: Left OFF track -> NUDGE RIGHT (80, -80)")
                 print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(80, -80)
-                print(f"[ITER {iteration}] Motor command sent successfully")
+                step_time = time.time() - step_start
+                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
             
             # Both sensors off track -> EMERGENCY BACKUP
             else:
                 print(f"[ITER {iteration}] Decision: BOTH OFF track -> BACKUP (-150, -150)")
                 print(f"[ITER {iteration}] Sending backup motor command...")
                 send_motor_command(-150, -150)
-                print(f"[ITER {iteration}] Backup command sent, sleeping 0.5s...")
+                step_time = time.time() - step_start
+                print(f"[ITER {iteration}] Backup command sent ({step_time:.3f}s), sleeping 0.5s...")
                 time.sleep(0.5)
                 print(f"[ITER {iteration}] Sending stop command...")
                 send_motor_command(0, 0)
@@ -125,11 +143,16 @@ def main():
                 time.sleep(0.1)
                 print(f"[ITER {iteration}] Backup sequence complete")
             
+            if step_time > 0.5:
+                print(f"[WARNING] Motor command took {step_time:.3f}s - unusually slow!")
+            
             # Reset error count on successful iteration
             error_count = 0
             print(f"[ITER {iteration}] Iteration complete, sleeping 0.05s...")
             time.sleep(0.05)
             print(f"[ITER {iteration}] --- End iteration ---")
+            
+            last_iteration_time = time.time()
             
         except KeyboardInterrupt:
             print("\n[INTERRUPT] Keyboard interrupt detected")
@@ -169,6 +192,8 @@ def main():
             print(f"[RECOVERY] Waiting 1 second before continuing...")
             time.sleep(1)
             print(f"[RECOVERY] Resuming...\n")
+            
+            last_iteration_time = time.time()
 
 
 if __name__ == "__main__":
