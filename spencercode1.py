@@ -149,8 +149,7 @@ def turn_right():
     print("*** Moving forward after turn ***")
     send_set_vel_pwm(200, 200)
     time.sleep(1.0)  # Drive forward longer
-    stop_motors()
-    time.sleep(0.2)
+    # DON'T stop here - let main loop take over
     print("*** RIGHT TURN COMPLETE ***\n")
 
 
@@ -165,8 +164,7 @@ def turn_left():
     print("*** Moving forward after turn ***")
     send_set_vel_pwm(200, 200)
     time.sleep(1.0)  # Drive forward longer
-    stop_motors()
-    time.sleep(0.2)
+    # DON'T stop here - let main loop take over
     print("*** LEFT TURN COMPLETE ***\n")
 
 
@@ -175,8 +173,7 @@ def backup():
     stop_motors()
     send_set_vel_pwm(-150, -150)
     time.sleep(0.9)  # Longer backup
-    stop_motors()
-    time.sleep(0.2)
+    # DON'T stop here - let turn function take over
     print("*** BACKUP COMPLETE ***\n")
 
 
