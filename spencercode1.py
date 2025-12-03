@@ -141,28 +141,32 @@ def setID():
 def turn_right():
     print("\n*** EXECUTING RIGHT TURN ***")
     stop_motors()
-    send_set_vel_pwm(-220, 220)  # Stronger turn
-    time.sleep(0.7)  # Longer turn time
+    send_set_vel_pwm(-240, 240)  # Even stronger turn
+    time.sleep(0.85)  # Much longer turn - full 90 degrees
+    stop_motors()
+    time.sleep(0.1)
+    # Drive forward MORE after turn to clear the obstacle
+    print("*** Moving forward after turn ***")
+    send_set_vel_pwm(200, 200)
+    time.sleep(1.0)  # Drive forward longer
     stop_motors()
     time.sleep(0.2)
-    # Drive forward after turn to clear the obstacle
-    print("*** Moving forward after turn ***")
-    send_set_vel_pwm(190, 190)
-    time.sleep(0.5)
     print("*** RIGHT TURN COMPLETE ***\n")
 
 
 def turn_left():
     print("\n*** EXECUTING LEFT TURN ***")
     stop_motors()
-    send_set_vel_pwm(220, -220)  # Stronger turn
-    time.sleep(0.7)  # Longer turn time
+    send_set_vel_pwm(240, -240)  # Even stronger turn
+    time.sleep(0.85)  # Much longer turn - full 90 degrees
+    stop_motors()
+    time.sleep(0.1)
+    # Drive forward MORE after turn to clear the obstacle
+    print("*** Moving forward after turn ***")
+    send_set_vel_pwm(200, 200)
+    time.sleep(1.0)  # Drive forward longer
     stop_motors()
     time.sleep(0.2)
-    # Drive forward after turn to clear the obstacle
-    print("*** Moving forward after turn ***")
-    send_set_vel_pwm(190, 190)
-    time.sleep(0.5)
     print("*** LEFT TURN COMPLETE ***\n")
 
 
@@ -170,7 +174,7 @@ def backup():
     print("\n*** BACKING UP ***")
     stop_motors()
     send_set_vel_pwm(-150, -150)
-    time.sleep(0.7)
+    time.sleep(0.9)  # Longer backup
     stop_motors()
     time.sleep(0.2)
     print("*** BACKUP COMPLETE ***\n")
@@ -224,71 +228,35 @@ def interpret_data(r, l, fr, fl):
     if front_min < 120:
         print("⚠️ CRITICAL OBSTACLE! Backing up...")
         backup()
-        time.sleep(0.3)  # Wait for sensors to update
-        # After backup, immediately check sides and turn
-        if r > l + 50:
-            print("  → After backup: Turning RIGHT")
+        # After backup, we're far from wall - don't check front again immediately
+        # Just turn based on side sensors
+        if r > l + 30:
+            print(f"  → After backup: RIGHT has more space ({r:.0f} vs {l:.0f})")
             turn_right()
         else:
-            print("  → After backup: Turning LEFT")
+            print(f"  → After backup: LEFT has more space ({l:.0f} vs {r:.0f})")
             turn_left()
         consecutive_stalls = 0
-        return
-
+        return  # Exit after full backup+turn sequence
+    
     # ============== TURN DECISION ==============
-    # If front is getting close, make turn decision
+    # If front is getting close OR we just backed up, make turn decision
     if front_min < 400:
         print(f"Front blocked ({front_min:.0f}mm) - deciding turn...")
         
-        # Check if either side is clearly open
-        right_open = r > 300
-        left_open = l > 300
+        # Simple decision: pick the side with more space
+        print(f"  → Right distance: {r:.0f} mm")
+        print(f"  → Left distance: {l:.0f} mm")
         
-        right_status = 'OPEN' if right_open else 'CLOSED'
-        left_status = 'OPEN' if left_open else 'CLOSED'
-        print(f"  → Right: {right_status} ({r:.0f} mm)")
-        print(f"  → Left: {left_status} ({l:.0f} mm)")
-        
-        # Add delay before checking to ensure fresh sensor data
-        time.sleep(0.1)
-        
-        if right_open and not left_open:
-            print("  → DECISION: Turn RIGHT")
+        if r > l + 30:
+            print("  → DECISION: Turn RIGHT (more space on right)")
             turn_right()
-            consecutive_stalls = 0
-            return
-        
-        elif left_open and not right_open:
-            print("  → DECISION: Turn LEFT")
-            turn_left()
-            consecutive_stalls = 0
-            return
-        
-        elif right_open and left_open:
-            # Both open - choose the more open side
-            if r > l + 50:
-                print(f"  → DECISION: Turn RIGHT (larger gap: {r:.0f} vs {l:.0f})")
-                turn_right()
-            else:
-                print(f"  → DECISION: Turn LEFT (larger gap: {l:.0f} vs {r:.0f})")
-                turn_left()
-            consecutive_stalls = 0
-            return
-        
         else:
-            # Neither side clearly open - just pick the larger side
-            consecutive_stalls += 1
-            print(f"  → Both sides tight - picking larger side (stall count: {consecutive_stalls})")
-            
-            if r > l + 30:
-                print("  → DECISION: Turn RIGHT (r > l)")
-                turn_right()
-            else:
-                print("  → DECISION: Turn LEFT (l >= r)")
-                turn_left()
-            
-            consecutive_stalls = 0
-            return
+            print("  → DECISION: Turn LEFT (more space on left)")
+            turn_left()
+        
+        consecutive_stalls = 0
+        return
 
     # ============== CORRIDOR CENTERING ==============
     diff = r - l
