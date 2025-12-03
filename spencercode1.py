@@ -272,10 +272,10 @@ def interpret_data(r, l, fr, fl):
     
     if abs(diff) > 60:
         if diff > 0:
-            print(f"Drift LEFT (R>L)")
+            print("Drift LEFT (R>L)")
             send_set_vel_pwm(140, 200)
         else:
-            print(f"Drift RIGHT (L>R)")
+            print("Drift RIGHT (L>R)")
             send_set_vel_pwm(200, 140)
     else:
         print("STRAIGHT")
