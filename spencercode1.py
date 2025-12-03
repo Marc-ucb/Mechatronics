@@ -141,20 +141,28 @@ def setID():
 def turn_right():
     print("\n*** EXECUTING RIGHT TURN ***")
     stop_motors()
-    send_set_vel_pwm(-200, 200)  # Stronger turn
-    time.sleep(0.6)  # Longer turn time
+    send_set_vel_pwm(-220, 220)  # Stronger turn
+    time.sleep(0.7)  # Longer turn time
     stop_motors()
-    time.sleep(0.3)  # Settle time
+    time.sleep(0.2)
+    # Drive forward after turn to clear the obstacle
+    print("*** Moving forward after turn ***")
+    send_set_vel_pwm(190, 190)
+    time.sleep(0.5)
     print("*** RIGHT TURN COMPLETE ***\n")
 
 
 def turn_left():
     print("\n*** EXECUTING LEFT TURN ***")
     stop_motors()
-    send_set_vel_pwm(200, -200)  # Stronger turn
-    time.sleep(0.6)  # Longer turn time
+    send_set_vel_pwm(220, -220)  # Stronger turn
+    time.sleep(0.7)  # Longer turn time
     stop_motors()
-    time.sleep(0.3)  # Settle time
+    time.sleep(0.2)
+    # Drive forward after turn to clear the obstacle
+    print("*** Moving forward after turn ***")
+    send_set_vel_pwm(190, 190)
+    time.sleep(0.5)
     print("*** LEFT TURN COMPLETE ***\n")
 
 
@@ -216,8 +224,9 @@ def interpret_data(r, l, fr, fl):
     if front_min < 120:
         print("⚠️ CRITICAL OBSTACLE! Backing up...")
         backup()
+        time.sleep(0.3)  # Wait for sensors to update
         # After backup, immediately check sides and turn
-        if r > l:
+        if r > l + 50:
             print("  → After backup: Turning RIGHT")
             turn_right()
         else:
@@ -239,6 +248,9 @@ def interpret_data(r, l, fr, fl):
         left_status = 'OPEN' if left_open else 'CLOSED'
         print(f"  → Right: {right_status} ({r:.0f} mm)")
         print(f"  → Left: {left_status} ({l:.0f} mm)")
+        
+        # Add delay before checking to ensure fresh sensor data
+        time.sleep(0.1)
         
         if right_open and not left_open:
             print("  → DECISION: Turn RIGHT")
@@ -268,11 +280,11 @@ def interpret_data(r, l, fr, fl):
             consecutive_stalls += 1
             print(f"  → Both sides tight - picking larger side (stall count: {consecutive_stalls})")
             
-            if r > l:
+            if r > l + 30:
                 print("  → DECISION: Turn RIGHT (r > l)")
                 turn_right()
             else:
-                print("  → DECISION: Turn LEFT (l > r)")
+                print("  → DECISION: Turn LEFT (l >= r)")
                 turn_left()
             
             consecutive_stalls = 0
