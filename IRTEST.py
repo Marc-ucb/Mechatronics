@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 import time
 import board
-import busio
 from digitalio import DigitalInOut, Direction
 
 ARDUINO_PORT = "/dev/ttyACM0"
 ARDUINO_BAUD = 115200
 
-# Try to open serial; fall back to print-only if not available
+# Try to open serial; fall back gracefully if not available
 try:
     import serial
     _ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.02)
@@ -19,10 +18,10 @@ except Exception as _e:
     _serial_ok = False
 
 # ======================================================================
-# IR setup (matches your main code)
+# IR setup (matches your main code pins)
 # ======================================================================
 
-# Digital IR pins (track = dark, bumpers = bright)
+# Digital IR pins (you said: DARK = track)
 IR_LEFT_DIGITAL_PIN = board.D23
 IR_RIGHT_DIGITAL_PIN = board.D24
 
@@ -36,11 +35,11 @@ ir_right_digital.direction = Direction.INPUT
 _ir_analog_left = None
 _ir_analog_right = None
 
-ANALOG_DARK_THRESHOLD = 1.0   # For later logic if you want
-ANALOG_LIGHT_THRESHOLD = 4.0
+ANALOG_DARK_THRESHOLD = 1.0   # for later logic if you want
+ANALOG_LIGHT_THRESHOLD = 4.0  # not used here, just kept for completeness
 
 # ======================================================================
-# Helpers to talk to Arduino
+# Helpers to talk to Arduino (for analog)
 # ======================================================================
 
 def _read_serial_line():
@@ -92,8 +91,10 @@ def read_ir_analog():
 def read_ir_digital():
     """
     Read digital state from both IR sensors.
-    - False = dark/on track
-    - True  = light/off track (bumper)
+
+    With your current wiring / behavior:
+    - True  = dark surface (ON TRACK)
+    - False = light surface (OFF TRACK / bumper)
     """
     return (ir_left_digital.value, ir_right_digital.value)
 
@@ -102,31 +103,33 @@ def read_ir_digital():
 # ======================================================================
 
 def diagnostic_loop():
-    print("[INFO] Starting IR diagnostic loop...")
-    print("      Digital: 'False' = dark/track, 'True' = light/bumper")
-    print("      Status: ON_TRACK / GOING_RIGHT / GOING_LEFT / BOTH_LIGHT")
-    print("---------------------------------------------------------------")
+    print("[INFO] Starting IR diagnostic loop (FLIPPED LOGIC)...")
+    print("      DIGITAL: True = dark/track, False = light/bumper")
+    print("      Status: ON_TRACK / GOING_LEFT / GOING_RIGHT / BOTH_LIGHT")
+    print("----------------------------------------------------------------")
 
     while True:
-        # Digital side: fast on/off track info
+        # Digital side
         left_dig, right_dig = read_ir_digital()
 
-        if not left_dig and not right_dig:
-            status = "ON_TRACK"
+        # True  = dark (track)
+        # False = light (bumper / off)
+        if left_dig and right_dig:
+            status = "ON_TRACK"        # both on dark track
         elif left_dig and not right_dig:
-            status = "GOING_RIGHT"   # left sees light -> steer right
+            status = "GOING_LEFT"      # left on track, right on bumper -> robot too far right
         elif right_dig and not left_dig:
-            status = "GOING_LEFT"    # right sees light -> steer left
+            status = "GOING_RIGHT"     # right on track, left on bumper -> robot too far left
         else:
-            status = "BOTH_LIGHT"    # both see light (unexpected, but useful to see)
+            status = "BOTH_LIGHT"      # both see light -> probably off track
 
-        # Analog side: just voltages (may be None at startup)
+        # Analog side: just show volts (may be NaN at startup)
         left_v, right_v = read_ir_analog()
         lv = left_v if left_v is not None else float("nan")
         rv = right_v if right_v is not None else float("nan")
 
         print(
-            f"DIGITAL  L={left_dig} R={right_dig}  -> {status}    "
+            f"DIGITAL  L={left_dig} R={right_dig}  -> {status:<12}  "
             f"ANALOG  L={lv:4.2f}V  R={rv:4.2f}V"
         )
 
