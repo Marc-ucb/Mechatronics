@@ -213,20 +213,27 @@ def interpret_data(r, l, fr, fl):
     front_min = min(fr, fl)
 
     # ============== CRITICAL OBSTACLE ==============
-    if front_min < 150:
-        print("⚠️ CRITICAL OBSTACLE!")
+    if front_min < 120:
+        print("⚠️ CRITICAL OBSTACLE! Backing up...")
         backup()
+        # After backup, immediately check sides and turn
+        if r > l:
+            print("  → After backup: Turning RIGHT")
+            turn_right()
+        else:
+            print("  → After backup: Turning LEFT")
+            turn_left()
         consecutive_stalls = 0
         return
 
     # ============== TURN DECISION ==============
     # If front is getting close, make turn decision
-    if front_min < 450:
-        print(f"Front blocked ({front_min}mm) - deciding turn...")
+    if front_min < 400:
+        print(f"Front blocked ({front_min:.0f}mm) - deciding turn...")
         
         # Check if either side is clearly open
-        right_open = r > 350
-        left_open = l > 350
+        right_open = r > 300
+        left_open = l > 300
         
         right_status = 'OPEN' if right_open else 'CLOSED'
         left_status = 'OPEN' if left_open else 'CLOSED'
@@ -247,7 +254,7 @@ def interpret_data(r, l, fr, fl):
         
         elif right_open and left_open:
             # Both open - choose the more open side
-            if r > l + 100:
+            if r > l + 50:
                 print(f"  → DECISION: Turn RIGHT (larger gap: {r:.0f} vs {l:.0f})")
                 turn_right()
             else:
@@ -257,31 +264,33 @@ def interpret_data(r, l, fr, fl):
             return
         
         else:
-            # Neither side clearly open - backup and try again
-            print("  → DECISION: Neither side open, backing up")
-            backup()
+            # Neither side clearly open - just pick the larger side
             consecutive_stalls += 1
+            print(f"  → Both sides tight - picking larger side (stall count: {consecutive_stalls})")
             
-            # If we're stuck, force a turn
-            if consecutive_stalls >= 3:
-                print("  → FORCING RIGHT TURN (stuck too long)")
+            if r > l:
+                print("  → DECISION: Turn RIGHT (r > l)")
                 turn_right()
-                consecutive_stalls = 0
+            else:
+                print("  → DECISION: Turn LEFT (l > r)")
+                turn_left()
+            
+            consecutive_stalls = 0
             return
 
     # ============== CORRIDOR CENTERING ==============
     diff = r - l
     
-    if abs(diff) > 60:
+    if abs(diff) > 80:
         if diff > 0:
             print("Drift LEFT (R>L)")
-            send_set_vel_pwm(140, 200)
+            send_set_vel_pwm(150, 200)
         else:
             print("Drift RIGHT (L>R)")
-            send_set_vel_pwm(200, 140)
+            send_set_vel_pwm(200, 150)
     else:
         print("STRAIGHT")
-        send_set_vel_pwm(180, 180)
+        send_set_vel_pwm(190, 190)
     
     consecutive_stalls = 0
 
