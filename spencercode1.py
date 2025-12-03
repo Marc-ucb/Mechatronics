@@ -18,8 +18,9 @@ try:
     import serial
     _ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.02)
     _serial_ok = True
+    print("[OK] Serial connection established")
 except Exception as _e:
-    print(f"[warn] Serial not available ({_e}). Will print commands instead.")
+    print(f"[WARN] Serial not available ({_e}). Will print commands instead.")
     _ser = None
     _serial_ok = False
 
@@ -29,12 +30,13 @@ def _send_line(line: str):
     if _serial_ok and _ser is not None:
         try:
             _ser.write(msg)
-            _ser.flush()  # Added flush to ensure command is sent
+            _ser.flush()
+            print(f"[CMD SENT] {line.rstrip()}")
         except Exception as e:
-            print(f"[serial err] {e}. Falling back to print.")
-            print(line.rstrip())
+            print(f"[SERIAL ERR] {e}")
+            print(f"[FALLBACK] {line.rstrip()}")
     else:
-        print(line.rstrip())
+        print(f"[NO SERIAL] {line.rstrip()}")
 
 
 # ==========================================================================================================
@@ -47,24 +49,15 @@ def send_set_vel_pwm(left_pwm, right_pwm):
     _send_line(f"SET_VEL L={L} R={R}")
 
 
-# ==========================================================================================================
-# Servo helpers ============================================================================================
-# ==========================================================================================================
-
-def send_servo_raise(deg: int):
-    d = max(0, min(180, int(deg)))
-    _send_line(f"SERVO A={d}")
-
-
-def send_servo_lower():
-    _send_line("SERVO REV")
+def stop_motors():
+    send_set_vel_pwm(0, 0)
+    time.sleep(0.1)
 
 
 # ==========================================================================================================
 # VL53L0X ToF Sensor Setup ================================================================================
 # ==========================================================================================================
 
-# Right, Left, Front1, Front2
 LOX1_ADDRESS = 0x30  # Right
 LOX2_ADDRESS = 0x31  # Left
 LOX3_ADDRESS = 0x32  # Front1
@@ -88,12 +81,13 @@ lox1 = lox2 = lox3 = lox4 = None
 def setID():
     global lox1, lox2, lox3, lox4
 
+    print("\n=== Initializing ToF Sensors ===")
     lox1 = lox2 = lox3 = lox4 = None
 
     # Reset all
     for x in (xshut1, xshut2, xshut3, xshut4):
         x.value = False
-    time.sleep(0.1)  # Increased delay for proper reset
+    time.sleep(0.1)
 
     # Right
     xshut1.value = True
@@ -135,189 +129,172 @@ def setID():
     except Exception as e:
         print(f"[ERROR] Front2 failed: {e}")
 
-    return all(s is not None for s in (lox1, lox2, lox3, lox4))
+    success = all(s is not None for s in (lox1, lox2, lox3, lox4))
+    print(f"=== Sensor Init {'SUCCESS' if success else 'FAILED'} ===\n")
+    return success
 
 
 # ==========================================================================================================
 # State Management ==========================================================================================
 # ==========================================================================================================
 
-previous_states = []
-last_turn_time = 0  # Prevent rapid repeated turns
+def turn_right():
+    print("\n*** EXECUTING RIGHT TURN ***")
+    stop_motors()
+    send_set_vel_pwm(-200, 200)  # Stronger turn
+    time.sleep(0.6)  # Longer turn time
+    stop_motors()
+    time.sleep(0.3)  # Settle time
+    print("*** RIGHT TURN COMPLETE ***\n")
 
-def state_history(state: int):
-    previous_states.append(state)
-    if len(previous_states) > 10:
-        previous_states.pop(0)
+
+def turn_left():
+    print("\n*** EXECUTING LEFT TURN ***")
+    stop_motors()
+    send_set_vel_pwm(200, -200)  # Stronger turn
+    time.sleep(0.6)  # Longer turn time
+    stop_motors()
+    time.sleep(0.3)  # Settle time
+    print("*** LEFT TURN COMPLETE ***\n")
 
 
-def robotState(state: int):
-    global last_turn_time
-    full = 255
-
-    match state:
-        case 1:  # Obstacle - backup
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.15)
-            send_set_vel_pwm(-120, -120)
-            time.sleep(0.6)
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.1)
-            state_history(1)
-
-        case 2:  # Right 90
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.15)
-            send_set_vel_pwm(-full, full)
-            time.sleep(0.5)  # Increased for full 90 degree turn
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.2)
-            last_turn_time = time.time()
-            state_history(2)
-
-        case 3:  # Left 90
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.15)
-            send_set_vel_pwm(full, -full)
-            time.sleep(0.5)  # Increased for full 90 degree turn
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.2)
-            last_turn_time = time.time()
-            state_history(3)
+def backup():
+    print("\n*** BACKING UP ***")
+    stop_motors()
+    send_set_vel_pwm(-150, -150)
+    time.sleep(0.7)
+    stop_motors()
+    time.sleep(0.2)
+    print("*** BACKUP COMPLETE ***\n")
 
 
 # ==========================================================================================================
-# TOF Sensor Logic (UPDATED WITH ERROR RECOVERY) ===========================================================
+# TOF Sensor Logic ========================================================================================
 # ==========================================================================================================
 
 i2c_error_count = 0
-MAX_I2C_ERRORS = 10
+consecutive_stalls = 0
 
 def safe_read(sensor, name):
     global i2c_error_count
-    try:
-        val = sensor.range
-        i2c_error_count = 0  # Reset error count on success
-        return val
-    except Exception as e:
-        i2c_error_count += 1
-        print(f"[I2C ERROR] {name}: {e} (count: {i2c_error_count})")
-        
-        # If too many errors, try to reinitialize sensors
-        if i2c_error_count >= MAX_I2C_ERRORS:
-            print("[CRITICAL] Too many I2C errors, attempting sensor reset...")
-            time.sleep(0.5)
-            reinit_sensors()
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            val = sensor.range
             i2c_error_count = 0
-        
-        return 9999
-
-
-def reinit_sensors():
-    """Attempt to reinitialize sensors after I2C errors"""
-    global lox1, lox2, lox3, lox4
+            return val
+        except Exception as e:
+            if attempt == max_retries - 1:
+                i2c_error_count += 1
+                print(f"[I2C ERROR] {name} failed after {max_retries} attempts: {e}")
+                
+                if i2c_error_count >= 5:
+                    print("\n[CRITICAL] Too many I2C errors - STOPPING ROBOT")
+                    stop_motors()
+                    raise Exception("I2C bus failure")
+                
+                return 8000
+            time.sleep(0.01)
     
-    send_set_vel_pwm(0, 0)  # Stop robot
-    print("Reinitializing sensors...")
-    
-    try:
-        setID()
-        time.sleep(0.5)
-        for s in (lox1, lox2, lox3, lox4):
-            if s is not None:
-                s.measurement_timing_budget = 20000
-                s.continuous_mode()
-        time.sleep(0.2)
-        print("Sensor reinitialization complete")
-    except Exception as e:
-        print(f"Reinitialization failed: {e}")
+    return 8000
 
 
 def interpret_data(r, l, fr, fl):
     """
-    Improved ToF navigation with better turn detection
+    Simple and aggressive turn logic
     """
-    global last_turn_time
-
-    full = 255
-    current_time = time.time()
-
-    # Prevent turns too close together
-    TURN_COOLDOWN = 1.5  # seconds
-    if current_time - last_turn_time < TURN_COOLDOWN:
-        # Just drive forward during cooldown
-        send_set_vel_pwm(180, 180)
-        return
-
-    # =============== EMERGENCY STOP ==================
-    if min(fr, fl) < 100:
-        print(f"EMERGENCY STOP: fr={fr}, fl={fl}")
-        robotState(1)
-        return
-
-    # =============== TURN LOGIC ======================
-    TURN_THRESHOLD = 400     # side must be this open to turn
-    FRONT_BLOCK = 350        # front blocked at this distance
-
-    front_blocked = min(fr, fl) < FRONT_BLOCK
+    global consecutive_stalls
     
-    if front_blocked:
-        print(f"Front blocked: fr={fr}, fl={fl}, r={r}, l={l}")
+    # Print sensor values every time
+    print(f"Sensors → R:{r:4.0f} L:{l:4.0f} FR:{fr:4.0f} FL:{fl:4.0f}", end=" | ")
+
+    # Get minimum front distance
+    front_min = min(fr, fl)
+
+    # ============== CRITICAL OBSTACLE ==============
+    if front_min < 150:
+        print("⚠️ CRITICAL OBSTACLE!")
+        backup()
+        consecutive_stalls = 0
+        return
+
+    # ============== TURN DECISION ==============
+    # If front is getting close, make turn decision
+    if front_min < 450:
+        print(f"Front blocked ({front_min}mm) - deciding turn...")
         
-        # Left open → turn left
-        if l > TURN_THRESHOLD and r < TURN_THRESHOLD:
-            print("→ Turn Left triggered")
-            robotState(3)
+        # Check if either side is clearly open
+        right_open = r > 350
+        left_open = l > 350
+        
+        print(f"  → Right: {'OPEN' if right_open else 'CLOSED'} ({r}mm)")
+        print(f"  → Left: {'OPEN' if left_open else 'CLOSED'} ({l}mm)")
+        
+        if right_open and not left_open:
+            print("  → DECISION: Turn RIGHT")
+            turn_right()
+            consecutive_stalls = 0
             return
-
-        # Right open → turn right
-        if r > TURN_THRESHOLD and l < TURN_THRESHOLD:
-            print("→ Turn Right triggered")
-            robotState(2)
+        
+        elif left_open and not right_open:
+            print("  → DECISION: Turn LEFT")
+            turn_left()
+            consecutive_stalls = 0
             return
-
-        # Both open → choose larger gap
-        if r > TURN_THRESHOLD and l > TURN_THRESHOLD:
-            if r > l:
-                print("→ Choosing Right turn (both open)")
-                robotState(2)
+        
+        elif right_open and left_open:
+            # Both open - choose the more open side
+            if r > l + 100:
+                print(f"  → DECISION: Turn RIGHT (larger gap: {r} vs {l})")
+                turn_right()
             else:
-                print("→ Choosing Left turn (both open)")
-                robotState(3)
+                print(f"  → DECISION: Turn LEFT (larger gap: {l} vs {r})")
+                turn_left()
+            consecutive_stalls = 0
             return
         
-        # Both closed → backup and reassess
-        print("→ Both sides closed, backing up")
-        robotState(1)
-        return
-
-    # =============== CORRIDOR CENTERING ==================
-    diff = r - l
-
-    if abs(diff) > 50:
-        if diff > 0:
-            send_set_vel_pwm(150, 210)  # drift left
-            print(f"Centering: drift left (r={r}, l={l})")
         else:
-            send_set_vel_pwm(210, 150)  # drift right
-            print(f"Centering: drift right (r={r}, l={l})")
-        return
+            # Neither side clearly open - backup and try again
+            print("  → DECISION: Neither side open, backing up")
+            backup()
+            consecutive_stalls += 1
+            
+            # If we're stuck, force a turn
+            if consecutive_stalls >= 3:
+                print("  → FORCING RIGHT TURN (stuck too long)")
+                turn_right()
+                consecutive_stalls = 0
+            return
 
-    # =============== DRIVE STRAIGHT ==================
-    send_set_vel_pwm(190, 190)
-    state_history(99)
+    # ============== CORRIDOR CENTERING ==============
+    diff = r - l
+    
+    if abs(diff) > 60:
+        if diff > 0:
+            print(f"Drift LEFT (R>{L})")
+            send_set_vel_pwm(140, 200)
+        else:
+            print(f"Drift RIGHT (L>{R})")
+            send_set_vel_pwm(200, 140)
+    else:
+        print("STRAIGHT")
+        send_set_vel_pwm(180, 180)
+    
+    consecutive_stalls = 0
 
 
 def driving():
-    """Main driving loop with error handling"""
-
-    # Set up continuous mode
+    """Main driving loop"""
+    
+    print("\n=== Configuring sensors for continuous mode ===")
     for s in (lox1, lox2, lox3, lox4):
         if s is not None:
-            s.measurement_timing_budget = 20000
+            s.measurement_timing_budget = 33000
             s.continuous_mode()
-
-    time.sleep(0.2)
+    
+    time.sleep(0.3)
+    print("=== Starting navigation ===\n")
 
     # Initialize filter arrays
     arrR = [1000, 1000, 1000]
@@ -329,35 +306,36 @@ def driving():
 
     while True:
         try:
+            # Read all sensors
             mR = safe_read(lox1, "Right")
             mL = safe_read(lox2, "Left")
             mFR = safe_read(lox3, "Front1")
             mFL = safe_read(lox4, "Front2")
 
+            # Update filter arrays
             arrR = np.append(arrR[1:], mR)
             arrL = np.append(arrL[1:], mL)
             arrFR = np.append(arrFR[1:], mFR)
             arrFL = np.append(arrFL[1:], mFL)
 
+            # Apply median filter
             fR = medfilt(arrR, kernel_size=3)[-1]
             fL = medfilt(arrL, kernel_size=3)[-1]
             fFR = medfilt(arrFR, kernel_size=3)[-1]
             fFL = medfilt(arrFL, kernel_size=3)[-1]
 
-            if loop_count % 10 == 0:  # Print every 10th loop to reduce spam
-                print(f"Sensors: R={fR:.0f}, L={fL:.0f}, FR={fFR:.0f}, FL={fFL:.0f}")
-            
+            # Navigation logic
             interpret_data(fR, fL, fFR, fFL)
             
             loop_count += 1
-            time.sleep(0.05)  # Small delay to prevent CPU overload
+            time.sleep(0.08)  # ~12Hz update rate
 
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            print(f"[LOOP ERROR] {e}")
-            send_set_vel_pwm(0, 0)
-            time.sleep(0.5)
+            print(f"\n[CRITICAL ERROR in main loop] {e}")
+            stop_motors()
+            raise
 
 
 # ==========================================================================================================
@@ -365,18 +343,20 @@ def driving():
 # ==========================================================================================================
 
 def main():
-    print("Starting Robot Navigation System...")
+    print("\n" + "="*60)
+    print("ROBOT NAVIGATION SYSTEM - DEBUG MODE")
+    print("="*60 + "\n")
 
     ok = setID()
     if not ok:
-        print("ERROR: Sensor initialization failure.")
-        print("Check I2C connections and sensor power.")
+        print("\n❌ FATAL: Sensor initialization failed")
+        print("Check connections and try again\n")
         return
 
-    print("Sensors initialized successfully!")
+    print("✓ All systems ready")
+    print("Starting in 2 seconds...\n")
     time.sleep(2)
     
-    print("Starting navigation...")
     driving()
 
 
@@ -384,9 +364,10 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        send_set_vel_pwm(0, 0)
-        print("\nStopping robot and exiting...")
+        stop_motors()
+        print("\n\n🛑 User stopped robot\n")
     except Exception as e:
-        send_set_vel_pwm(0, 0)
-        print(f"\n[CRITICAL ERROR] {e}")
-        print("Robot stopped.")
+        stop_motors()
+        print(f"\n\n💥 FATAL ERROR: {e}\n")
+        import traceback
+        traceback.print_exc()
