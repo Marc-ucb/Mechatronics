@@ -74,8 +74,11 @@ def main():
     print("Starting in 3 seconds...\n")
     time.sleep(3)
     
-    try:
-        while True:
+    error_count = 0
+    max_errors = 5
+    
+    while True:
+        try:
             left_on_track, right_on_track = read_ir_sensors()
             
             # Both sensors on track -> GO STRAIGHT
@@ -101,11 +104,35 @@ def main():
                 send_motor_command(0, 0)
                 time.sleep(0.1)
             
+            # Reset error count on successful iteration
+            error_count = 0
             time.sleep(0.05)  # Small delay between readings
             
-    except KeyboardInterrupt:
-        send_motor_command(0, 0)
-        print("\n\nStopped.")
+        except KeyboardInterrupt:
+            send_motor_command(0, 0)
+            print("\n\nStopped.")
+            break
+            
+        except Exception as e:
+            error_count += 1
+            print(f"\n[ERROR] Exception caught: {e}")
+            print(f"[ERROR] Error count: {error_count}/{max_errors}")
+            
+            # Stop motors on error
+            try:
+                send_motor_command(0, 0)
+            except:
+                pass
+            
+            if error_count >= max_errors:
+                print(f"[FATAL] Too many errors ({max_errors}), shutting down.")
+                send_motor_command(0, 0)
+                break
+            
+            # Wait a bit before retrying
+            print("[RECOVERY] Waiting 1 second before continuing...")
+            time.sleep(1)
+            print("[RECOVERY] Resuming...\n")
 
 
 if __name__ == "__main__":
