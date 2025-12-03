@@ -1,149 +1,28 @@
-def main():
-    global shutting_down
-    
-    print("\n=== IR-Only Robot Control (DIAGNOSTIC VERSION) ===")
-    sys.stdout.flush()
-    print("Starting in 3 seconds...\n")
-    sys.stdout.flush()
-    time.sleep(3)
-    
-    error_count = 0
-    max_errors = 5
-    iteration = 0
-    last_iteration_time = time.time()
-    
-    print("[INFO] Entering main loop - script should run forever")
-    sys.stdout.flush()
-    
-    while not shutting_down:
-        try:
-            iteration += 1
-            current_time = time.time()
-            time_since_last = current_time - last_iteration_time
-            
-            # Heartbeat every 50 iterations
-            if iteration % 50 == 0:
-                print(f"\n[HEARTBEAT] Iteration {iteration} - Still alive! (Total runtime: {current_time - last_iteration_time:.1f}s)")
-                sys.stdout.flush()
-            
-            print(f"\n[ITER {iteration}] --- Starting iteration (gap: {time_since_last:.3f}s) ---")
-            sys.stdout.flush()
-            
-            if time_since_last > 2.0:
-                print(f"[WARNING] Large gap between iterations! Possible hang detected.")
-                sys.stdout.flush()
-            
-            step_start = time.time()
-            
-            # Step 1: Read sensors
-            print(f"[ITER {iteration}] Reading IR sensors...")
-            sys.stdout.flush()
-            
-            left_on_track, right_on_track = read_ir_sensors()
-            
-            step_time = time.time() - step_start
-            print(f"[ITER {iteration}] Sensors: left={left_on_track}, right={right_on_track} ({step_time:.3f}s)")
-            sys.stdout.flush()
-            
-            if step_time > 0.5:
-                print(f"[WARNING] Sensor read took {step_time:.3f}s!")
-                sys.stdout.flush()
-            
-            # Step 2: Send motor command
-            step_start = time.time()
-            
-            if left_on_track and right_on_track:
-                print(f"[ITER {iteration}] Both ON -> STRAIGHT (200, 200)")
-                sys.stdout.flush()
-                send_motor_command(200, 200)
-            
-            elif left_on_track and not right_on_track:
-                print(f"[ITER {iteration}] Right OFF -> LEFT (-80, 80)")
-                sys.stdout.flush()
-                send_motor_command(-80, 80)
-            
-            elif right_on_track and not left_on_track:
-                print(f"[ITER {iteration}] Left OFF -> RIGHT (80, -80)")
-                sys.stdout.flush()
-                send_motor_command(80, -80)
-            
-            else:
-                print(f"[ITER {iteration}] BOTH OFF -> BACKUP (-150, -150)")
-                sys.stdout.flush()
-                send_motor_command(-150, -150)
-                time.sleep(0.5)
-                send_motor_command(0, 0)
-                time.sleep(0.1)
-            
-            step_time = time.time() - step_start
-            if step_time > 0.5:
-                print(f"[WARNING] Motor command took {step_time:.3f}s!")
-                sys.stdout.flush()
-            
-            # Reset error count on successful iteration
-            error_count = 0
-            time.sleep(0.05)
-            last_iteration_time = time.time()
-            
-        except KeyboardInterrupt:
-            print("\n[INTERRUPT] Keyboard interrupt - stopping")
-            sys.stdout.flush()
-            shutting_down = True
-            
-        except Exception as e:
-            import traceback
-            error_count += 1
-            print(f"\n{'='*80}")
-            print(f"[ERROR] Exception in iteration {iteration}")
-            print(f"[ERROR] Type: {type(e).__name__}")
-            print(f"[ERROR] Message: {e}")
-            print(f"[ERROR] Count: {error_count}/{max_errors}")
-            traceback.print_exc()
-            print(f"{'='*80}\n")
-            sys.stdout.flush()
-            
-            try:
-                send_motor_command(0, 0)
-            except:
-                pass
-            
-            if error_count >= max_errors:
-                print(f"\n[FATAL] Too many errors - shutting down")
-                sys.stdout.flush()
-                shutting_down = True
-            else:
-                print(f"[RECOVERY] Waiting 1s before retry...")
-                sys.stdout.flush()
-                time.sleep(1)
-            
-            last_iteration_time = time.time()
-    
-    # Clean shutdown
-    print("\n[SHUTDOWN] Stopping motors...")
-    sys.stdout.flush()
-    send_motor_command(0, 0)
-    print("[SHUTDOWN] Complete. Exited gracefully.")
-    sys.stdout.flush()# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import time
 import sys
 import signal
 import board
 from digitalio import DigitalInOut, Direction
 
-# Force immediate output flushing so we see prints before crashes
-sys.stdout.flush()
-sys.stderr.flush()
+# Open log file
+log_file = open('/tmp/robot_debug.log', 'w', buffering=1)
+
+def log(msg):
+    """Write to both stdout and log file"""
+    print(msg)
+    log_file.write(msg + '\n')
+    sys.stdout.flush()
+    log_file.flush()
 
 # Flag to track if we're shutting down
 shutting_down = False
 
 def signal_handler(sig, frame):
     global shutting_down
-    print(f"\n[SIGNAL] Received signal {sig}")
-    sys.stdout.flush()
+    log(f"\n[SIGNAL] Received signal {sig}")
     shutting_down = True
     
-# Catch termination signals
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -158,8 +37,9 @@ try:
     import serial
     _ser = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD, timeout=0.02)
     _serial_ok = True
+    log(f"[INFO] Serial OK on {ARDUINO_PORT}")
 except Exception as e:
-    print(f"[warn] Serial not available ({e}). Will print commands instead.")
+    log(f"[warn] Serial not available ({e}). Will print commands instead.")
     _ser = None
     _serial_ok = False
 
@@ -170,15 +50,11 @@ def _send_line(line: str):
     if _serial_ok and _ser is not None:
         try:
             _ser.write(msg)
-            sys.stdout.flush()  # Force output
         except Exception as e:
-            print(f"[serial err] {e}. Falling back to print.")
-            sys.stdout.flush()
-            print(line.rstrip())
-            sys.stdout.flush()
+            log(f"[serial err] {e}. Falling back to print.")
+            log(line.rstrip())
     else:
-        print(line.rstrip())
-        sys.stdout.flush()
+        log(line.rstrip())
 
 
 def send_motor_command(left_pwm, right_pwm):
@@ -201,7 +77,7 @@ ir_left.direction = Direction.INPUT
 ir_right = DigitalInOut(IR_RIGHT_DIGITAL_PIN)
 ir_right.direction = Direction.INPUT
 
-print("[OK] IR sensors initialized")
+log("[OK] IR sensors initialized")
 
 
 def read_ir_sensors():
@@ -214,134 +90,143 @@ def read_ir_sensors():
 
 
 # ==========================================================================================================
-# Main Control Loop ========================================================================================
+# Main Control Loop with Watchdog ==========================================================================
 # ==========================================================================================================
 
 def main():
-    print("\n=== IR-Only Robot Control (DIAGNOSTIC VERSION) ===")
-    print("Starting in 3 seconds...\n")
+    global shutting_down
+    
+    log("\n=== IR-Only Robot Control with Watchdog ===")
+    log("Log file: /tmp/robot_debug.log")
+    log("Watchdog: Will reset if no motor command for 4 seconds")
+    log("Starting in 3 seconds...\n")
     time.sleep(3)
     
-    error_count = 0
-    max_errors = 5
     iteration = 0
-    last_iteration_time = time.time()
+    reset_count = 0
+    start_time = time.time()
     
-    while True:
+    log("[INFO] Entering main loop")
+    
+    while not shutting_down:
         try:
-            iteration += 1
-            current_time = time.time()
-            time_since_last = current_time - last_iteration_time
+            # Watchdog: Track last motor command time
+            last_motor_command_time = time.time()
+            loop_start_time = time.time()
             
-            print(f"\n[ITER {iteration}] --- Starting iteration (time since last: {time_since_last:.3f}s) ---")
+            log(f"\n[LOOP START] Reset #{reset_count}, Iteration {iteration}")
             
-            if time_since_last > 2.0:
-                print(f"[WARNING] Large gap between iterations! Possible hang/block detected.")
+            while not shutting_down:
+                try:
+                    iteration += 1
+                    current_time = time.time()
+                    time_since_motor_cmd = current_time - last_motor_command_time
+                    runtime = current_time - start_time
+                    
+                    # WATCHDOG CHECK: Reset if no motor command in 4 seconds
+                    if time_since_motor_cmd > 4.0:
+                        log(f"\n[WATCHDOG] No motor command for {time_since_motor_cmd:.1f}s - RESETTING LOOP")
+                        log(f"[WATCHDOG] Last iteration: {iteration}, Runtime: {runtime:.1f}s")
+                        send_motor_command(0, 0)  # Stop motors
+                        reset_count += 1
+                        time.sleep(0.5)
+                        break  # Break inner loop to reset
+                    
+                    # Heartbeat every 50 iterations
+                    if iteration % 50 == 0:
+                        log(f"[HEARTBEAT] Iter {iteration}, Runtime: {runtime:.1f}s, Resets: {reset_count}")
+                    
+                    # Read sensors
+                    left_on_track, right_on_track = read_ir_sensors()
+                    
+                    # Determine action and send command
+                    if left_on_track and right_on_track:
+                        # Both on track - go straight
+                        send_motor_command(200, 200)
+                        last_motor_command_time = time.time()
+                        if iteration % 20 == 0:  # Print every 20th to reduce spam
+                            log(f"[{iteration}] STRAIGHT (L={left_on_track} R={right_on_track})")
+                    
+                    elif left_on_track and not right_on_track:
+                        # Right off track - nudge left
+                        log(f"[{iteration}] RIGHT OFF -> NUDGE LEFT")
+                        send_motor_command(-80, 80)
+                        last_motor_command_time = time.time()
+                    
+                    elif right_on_track and not left_on_track:
+                        # Left off track - nudge right
+                        log(f"[{iteration}] LEFT OFF -> NUDGE RIGHT")
+                        send_motor_command(80, -80)
+                        last_motor_command_time = time.time()
+                    
+                    else:
+                        # Both off track - backup
+                        log(f"[{iteration}] BOTH OFF -> BACKUP")
+                        send_motor_command(-150, -150)
+                        last_motor_command_time = time.time()
+                        time.sleep(0.5)
+                        send_motor_command(0, 0)
+                        last_motor_command_time = time.time()
+                        time.sleep(0.1)
+                    
+                    time.sleep(0.05)  # Small delay between readings
+                    
+                except KeyboardInterrupt:
+                    log("\n[INTERRUPT] Keyboard interrupt")
+                    shutting_down = True
+                    break
+                    
+                except Exception as e:
+                    import traceback
+                    log(f"\n[ERROR] Inner loop exception: {type(e).__name__}: {e}")
+                    for line in traceback.format_exc().split('\n'):
+                        log(line)
+                    
+                    # Stop motors and break to reset
+                    try:
+                        send_motor_command(0, 0)
+                    except:
+                        pass
+                    
+                    log("[ERROR] Breaking to reset loop")
+                    reset_count += 1
+                    time.sleep(1)
+                    break
             
-            step_start = time.time()
-            
-            # Step 1: Read sensors
-            print(f"[ITER {iteration}] Reading IR sensors...")
-            left_on_track, right_on_track = read_ir_sensors()
-            step_time = time.time() - step_start
-            print(f"[ITER {iteration}] Sensors read ({step_time:.3f}s): left={left_on_track}, right={right_on_track}")
-            
-            if step_time > 0.5:
-                print(f"[WARNING] Sensor read took {step_time:.3f}s - unusually slow!")
-            
-            # Step 2: Determine action
-            print(f"[ITER {iteration}] Determining action...")
-            step_start = time.time()
-            
-            # Both sensors on track -> GO STRAIGHT
-            if left_on_track and right_on_track:
-                print(f"[ITER {iteration}] Decision: Both ON track -> STRAIGHT (200, 200)")
-                print(f"[ITER {iteration}] Sending motor command...")
-                send_motor_command(200, 200)
-                step_time = time.time() - step_start
-                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
-            
-            # Left on track, Right off track -> TOO FAR RIGHT -> NUDGE LEFT
-            elif left_on_track and not right_on_track:
-                print(f"[ITER {iteration}] Decision: Right OFF track -> NUDGE LEFT (-80, 80)")
-                print(f"[ITER {iteration}] Sending motor command...")
-                send_motor_command(-80, 80)
-                step_time = time.time() - step_start
-                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
-            
-            # Right on track, Left off track -> TOO FAR LEFT -> NUDGE RIGHT
-            elif right_on_track and not left_on_track:
-                print(f"[ITER {iteration}] Decision: Left OFF track -> NUDGE RIGHT (80, -80)")
-                print(f"[ITER {iteration}] Sending motor command...")
-                send_motor_command(80, -80)
-                step_time = time.time() - step_start
-                print(f"[ITER {iteration}] Motor command sent successfully ({step_time:.3f}s)")
-            
-            # Both sensors off track -> EMERGENCY BACKUP
-            else:
-                print(f"[ITER {iteration}] Decision: BOTH OFF track -> BACKUP (-150, -150)")
-                print(f"[ITER {iteration}] Sending backup motor command...")
-                send_motor_command(-150, -150)
-                step_time = time.time() - step_start
-                print(f"[ITER {iteration}] Backup command sent ({step_time:.3f}s), sleeping 0.5s...")
+            # If we broke out of inner loop (not shutting down), continue outer loop to reset
+            if not shutting_down:
+                log(f"[RESET] Loop reset complete, restarting...")
                 time.sleep(0.5)
-                print(f"[ITER {iteration}] Sending stop command...")
-                send_motor_command(0, 0)
-                print(f"[ITER {iteration}] Stop command sent, sleeping 0.1s...")
-                time.sleep(0.1)
-                print(f"[ITER {iteration}] Backup sequence complete")
-            
-            if step_time > 0.5:
-                print(f"[WARNING] Motor command took {step_time:.3f}s - unusually slow!")
-            
-            # Reset error count on successful iteration
-            error_count = 0
-            print(f"[ITER {iteration}] Iteration complete, sleeping 0.05s...")
-            time.sleep(0.05)
-            print(f"[ITER {iteration}] --- End iteration ---")
-            
-            last_iteration_time = time.time()
-            
+                
         except KeyboardInterrupt:
-            print("\n[INTERRUPT] Keyboard interrupt detected")
-            send_motor_command(0, 0)
-            print("\n\nStopped.")
-            break
+            log("\n[INTERRUPT] Keyboard interrupt in outer loop")
+            shutting_down = True
             
         except Exception as e:
             import traceback
-            error_count += 1
-            print(f"\n{'='*80}")
-            print(f"[ERROR] Exception in iteration {iteration}")
-            print(f"[ERROR] Exception type: {type(e).__name__}")
-            print(f"[ERROR] Exception message: {e}")
-            print(f"[ERROR] Error count: {error_count}/{max_errors}")
-            print(f"\n[TRACEBACK] Full traceback:")
-            traceback.print_exc()
-            print(f"{'='*80}\n")
+            log(f"\n[FATAL] Outer loop exception: {type(e).__name__}: {e}")
+            for line in traceback.format_exc().split('\n'):
+                log(line)
             
-            # Stop motors on error
-            print("[ERROR] Attempting to stop motors...")
             try:
                 send_motor_command(0, 0)
-                print("[ERROR] Motors stopped successfully")
-            except Exception as stop_error:
-                print(f"[ERROR] Failed to stop motors: {stop_error}")
+            except:
+                pass
             
-            if error_count >= max_errors:
-                print(f"\n[FATAL] Too many consecutive errors ({max_errors}), shutting down.")
-                try:
-                    send_motor_command(0, 0)
-                except:
-                    pass
-                break
+            reset_count += 1
+            log(f"[FATAL] Attempting recovery, reset count: {reset_count}")
             
-            # Wait a bit before retrying
-            print(f"[RECOVERY] Waiting 1 second before continuing...")
-            time.sleep(1)
-            print(f"[RECOVERY] Resuming...\n")
-            
-            last_iteration_time = time.time()
+            if reset_count > 10:
+                log("[FATAL] Too many resets, giving up")
+                shutting_down = True
+            else:
+                time.sleep(2)
+    
+    # Clean shutdown
+    log("\n[SHUTDOWN] Stopping motors...")
+    send_motor_command(0, 0)
+    log("[SHUTDOWN] Complete. Exited gracefully.")
+    log_file.close()
 
 
 if __name__ == "__main__":
