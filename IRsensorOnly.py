@@ -70,69 +70,105 @@ def read_ir_sensors():
 # ==========================================================================================================
 
 def main():
-    print("\n=== IR-Only Robot Control ===")
+    print("\n=== IR-Only Robot Control (DIAGNOSTIC VERSION) ===")
     print("Starting in 3 seconds...\n")
     time.sleep(3)
     
     error_count = 0
     max_errors = 5
+    iteration = 0
     
     while True:
         try:
+            iteration += 1
+            print(f"\n[ITER {iteration}] --- Starting iteration ---")
+            
+            # Step 1: Read sensors
+            print(f"[ITER {iteration}] Reading IR sensors...")
             left_on_track, right_on_track = read_ir_sensors()
+            print(f"[ITER {iteration}] Sensors read: left={left_on_track}, right={right_on_track}")
+            
+            # Step 2: Determine action
+            print(f"[ITER {iteration}] Determining action...")
             
             # Both sensors on track -> GO STRAIGHT
             if left_on_track and right_on_track:
-                print("Both ON track -> STRAIGHT (200, 200)")
+                print(f"[ITER {iteration}] Decision: Both ON track -> STRAIGHT (200, 200)")
+                print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(200, 200)
+                print(f"[ITER {iteration}] Motor command sent successfully")
             
             # Left on track, Right off track -> TOO FAR RIGHT -> NUDGE LEFT
             elif left_on_track and not right_on_track:
-                print("Right OFF track -> NUDGE LEFT (-80, 80)")
+                print(f"[ITER {iteration}] Decision: Right OFF track -> NUDGE LEFT (-80, 80)")
+                print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(-80, 80)
+                print(f"[ITER {iteration}] Motor command sent successfully")
             
             # Right on track, Left off track -> TOO FAR LEFT -> NUDGE RIGHT
             elif right_on_track and not left_on_track:
-                print("Left OFF track -> NUDGE RIGHT (80, -80)")
+                print(f"[ITER {iteration}] Decision: Left OFF track -> NUDGE RIGHT (80, -80)")
+                print(f"[ITER {iteration}] Sending motor command...")
                 send_motor_command(80, -80)
+                print(f"[ITER {iteration}] Motor command sent successfully")
             
             # Both sensors off track -> EMERGENCY BACKUP
             else:
-                print("BOTH OFF track -> BACKUP (-150, -150)")
+                print(f"[ITER {iteration}] Decision: BOTH OFF track -> BACKUP (-150, -150)")
+                print(f"[ITER {iteration}] Sending backup motor command...")
                 send_motor_command(-150, -150)
+                print(f"[ITER {iteration}] Backup command sent, sleeping 0.5s...")
                 time.sleep(0.5)
+                print(f"[ITER {iteration}] Sending stop command...")
                 send_motor_command(0, 0)
+                print(f"[ITER {iteration}] Stop command sent, sleeping 0.1s...")
                 time.sleep(0.1)
+                print(f"[ITER {iteration}] Backup sequence complete")
             
             # Reset error count on successful iteration
             error_count = 0
-            time.sleep(0.05)  # Small delay between readings
+            print(f"[ITER {iteration}] Iteration complete, sleeping 0.05s...")
+            time.sleep(0.05)
+            print(f"[ITER {iteration}] --- End iteration ---")
             
         except KeyboardInterrupt:
+            print("\n[INTERRUPT] Keyboard interrupt detected")
             send_motor_command(0, 0)
             print("\n\nStopped.")
             break
             
         except Exception as e:
+            import traceback
             error_count += 1
-            print(f"\n[ERROR] Exception caught: {e}")
+            print(f"\n{'='*80}")
+            print(f"[ERROR] Exception in iteration {iteration}")
+            print(f"[ERROR] Exception type: {type(e).__name__}")
+            print(f"[ERROR] Exception message: {e}")
             print(f"[ERROR] Error count: {error_count}/{max_errors}")
+            print(f"\n[TRACEBACK] Full traceback:")
+            traceback.print_exc()
+            print(f"{'='*80}\n")
             
             # Stop motors on error
+            print("[ERROR] Attempting to stop motors...")
             try:
                 send_motor_command(0, 0)
-            except:
-                pass
+                print("[ERROR] Motors stopped successfully")
+            except Exception as stop_error:
+                print(f"[ERROR] Failed to stop motors: {stop_error}")
             
             if error_count >= max_errors:
-                print(f"[FATAL] Too many errors ({max_errors}), shutting down.")
-                send_motor_command(0, 0)
+                print(f"\n[FATAL] Too many consecutive errors ({max_errors}), shutting down.")
+                try:
+                    send_motor_command(0, 0)
+                except:
+                    pass
                 break
             
             # Wait a bit before retrying
-            print("[RECOVERY] Waiting 1 second before continuing...")
+            print(f"[RECOVERY] Waiting 1 second before continuing...")
             time.sleep(1)
-            print("[RECOVERY] Resuming...\n")
+            print(f"[RECOVERY] Resuming...\n")
 
 
 if __name__ == "__main__":
