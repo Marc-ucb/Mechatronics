@@ -150,8 +150,8 @@ def read_ir_digital():
     """
     Read digital state from both IR sensors for dark vs light detection.
     Returns: (left, right) tuple of boolean values
-    - False = dark surface (on track)
-    - True = light surface (off track)
+    - True  = dark surface (on track)
+    - False = light surface (off track / bumper)
     """
     return (ir_left_digital.value, ir_right_digital.value)
 
@@ -184,13 +184,17 @@ def check_track_status():
     - Analog voltage and analog-based booleans are measured but NOT used here.
       (They are available via read_ir_analog / read_ir_analog_boolean
        for tuning or future decision logic.)
+
+    With current wiring:
+    - True  = dark/on track
+    - False = light/off track
     """
     # Digital-only on/off track
     left_digital, right_digital = read_ir_digital()
 
-    # False = dark/on track, True = light/off track
-    left_on_track = (left_digital == False)
-    right_on_track = (right_digital == False)
+    # True = dark/on track, False = light/off track
+    left_on_track = (left_digital == True)
+    right_on_track = (right_digital == True)
 
     # Determine overall status
     if left_on_track and right_on_track:
@@ -447,38 +451,44 @@ def handle_ir_correction():
       - If left sees light  -> nudge robot right.
       - If right sees light -> nudge robot left.
 
+    With current wiring:
+      - True  = dark / on track
+      - False = light / off track (bumper)
+
     Returns:
       True  if an IR-based correction command was sent (skip ToF this cycle)
       False if no correction (ToF logic should run as normal)
     """
-    # False = dark/on track, True = light/off track (bumpers)
+    # True = dark/on track, False = light/off track (bumpers)
     left_digital, right_digital = read_ir_digital()
 
     # Both on track -> no correction, return to ToF ASAP
-    if not left_digital and not right_digital:
+    if left_digital and right_digital:
         return False
 
-    # Left sees light, right still on track -> drifted left, steer right
-    if left_digital and not right_digital:
-        send_set_vel_pwm(0,0)
+    # Left sees light (False), right still on track (True)
+    # -> robot too far left, steer right
+    if (not left_digital) and right_digital:
+        send_set_vel_pwm(0, 0)
         send_set_vel_pwm(100, -100)
         time.sleep(0.1)
-        send_set_vel_pwm(0,0)
-        send_set_vel_pwm(100,100)
+        send_set_vel_pwm(0, 0)
+        send_set_vel_pwm(100, 100)
         state_history(71)
         return True
 
-    # Right sees light, left still on track -> drifted right, steer left
-    if right_digital and not left_digital:
+    # Right sees light (False), left still on track (True)
+    # -> robot too far right, steer left
+    if (not right_digital) and left_digital:
         send_set_vel_pwm(0, 0)
         send_set_vel_pwm(-100, 100)
         time.sleep(0.1)
         send_set_vel_pwm(0, 0)
-        send_set_vel_pwm(100,100)
+        send_set_vel_pwm(100, 100)
         state_history(72)
         return True
 
-    # If both see light (shouldn't happen in your course), play it safe:
+    # If both see light (both False) -> unexpected; play it safe:
     send_set_vel_pwm(0, 0)
     state_history(73)
     return True
