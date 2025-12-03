@@ -39,47 +39,71 @@ def _send_line(line: str):
 
 
 def _read_serial_line():
-    """Read a line from Arduino serial if available."""
+    """Read a single line from Arduino serial if available."""
     if _serial_ok and _ser is not None:
         try:
             if _ser.in_waiting > 0:
                 line = _ser.readline().decode('ascii', errors='ignore').strip()
                 return line
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[serial read err] {e}")
     return None
+
+
+# ==========================================================================================================
+# IR Analog-from-Arduino Parsing ==========================================================================
+# ==========================================================================================================
+
+# Analog readings come from Arduino via serial
+# Arduino sends: "IR L=<left_voltage> R=<right_voltage>"
+_ir_analog_left = None
+_ir_analog_right = None
+_analog_available = True  # We get analog via Arduino
 
 
 def _parse_ir_from_serial():
     """
     Parse IR sensor readings from Arduino serial.
     Expected format: "IR L=1.23 R=4.56"
-    Updates global _ir_analog_left and _ir_analog_right
+    Updates global _ir_analog_left and _ir_analog_right.
+
+    This drains ALL available IR lines to avoid clogging the serial buffer.
     """
     global _ir_analog_left, _ir_analog_right
 
-    line = _read_serial_line()
-    if line and line.startswith("IR "):
-        try:
-            # Parse "IR L=1.23 R=4.56"
-            parts = line.split()
-            for part in parts:
-                if part.startswith("L="):
-                    _ir_analog_left = float(part[2:])
-                elif part.startswith("R="):
-                    _ir_analog_right = float(part[2:])
-        except Exception as e:
-            pass  # Silently ignore parse errors
+    if not (_serial_ok and _ser is not None):
+        return
+
+    try:
+        # Drain all available lines; keep the most recent IR reading
+        while _ser.in_waiting > 0:
+            line = _ser.readline().decode('ascii', errors='ignore').strip()
+            if not line:
+                continue
+            if line.startswith("IR "):
+                try:
+                    parts = line.split()
+                    for part in parts:
+                        if part.startswith("L="):
+                            _ir_analog_left = float(part[2:])
+                        elif part.startswith("R="):
+                            _ir_analog_right = float(part[2:])
+                except Exception:
+                    # Ignore malformed IR lines
+                    pass
+            else:
+                # Other messages can be printed for debugging if you want:
+                # print(f"[serial msg] {line}")
+                pass
+    except Exception as e:
+        print(f"[IR parse err] {e}")
 
 
 # ==========================================================================================================
 # IR Sensor Setup (Backup/Line Detection) =================================================================
 # ==========================================================================================================
 
-# IR sensors connected to Arduino, which sends readings via serial
-# Arduino reads analog voltages and sends boolean values to Raspberry Pi
-
-# IR sensor pins - EVEN NUMBERED pins to avoid conflicts
+# IR sensors connected to Raspberry Pi as DIGITAL backup
 IR_LEFT_DIGITAL_PIN = board.D23
 IR_RIGHT_DIGITAL_PIN = board.D24
 
@@ -89,12 +113,6 @@ ir_left_digital.direction = Direction.INPUT
 
 ir_right_digital = DigitalInOut(IR_RIGHT_DIGITAL_PIN)
 ir_right_digital.direction = Direction.INPUT
-
-# Analog readings come from Arduino via serial
-# Arduino will send format: "IR L=<left_voltage> R=<right_voltage>"
-_ir_analog_left = None
-_ir_analog_right = None
-_analog_available = True  # We get analog via Arduino
 
 # Voltage thresholds for analog IR sensors (tune these values)
 ANALOG_DARK_THRESHOLD = 1.0  # Voltage < 1.0V = dark/on track (False)
@@ -109,7 +127,6 @@ def read_ir_analog():
     """
     # Update from Arduino serial
     _parse_ir_from_serial()
-
     return (_ir_analog_left, _ir_analog_right)
 
 
@@ -151,8 +168,15 @@ def read_ir_digital():
     Returns: (left, right) tuple of boolean values
     - True  = dark surface (on track)
     - False = light surface (off track / bumper)
+
+    On error, returns (True, True) to behave as "both on track".
     """
-    return (ir_left_digital.value, ir_right_digital.value)
+    try:
+        return (ir_left_digital.value, ir_right_digital.value)
+    except Exception as e:
+        print(f"[IR ERROR] digital read failed: {e}")
+        # Safe default: no correction
+        return (True, True)
 
 
 def read_ir_sensors():
@@ -181,21 +205,12 @@ def check_track_status():
     CURRENT BEHAVIOR:
     - Uses DIGITAL IR readings only for on/off track detection.
     - Analog voltage and analog-based booleans are measured but NOT used here.
-      (They are available via read_ir_analog / read_ir_analog_boolean
-       for tuning or future decision logic.)
-
-    With current wiring:
-    - True  = dark/on track
-    - False = light/off track
     """
-    # Digital-only on/off track
     left_digital, right_digital = read_ir_digital()
 
-    # True = dark/on track, False = light/off track
-    left_on_track = (left_digital == True)
-    right_on_track = (right_digital == True)
+    left_on_track = (left_digital is True)
+    right_on_track = (right_digital is True)
 
-    # Determine overall status
     if left_on_track and right_on_track:
         return "ON_TRACK"
     elif not left_on_track and not right_on_track:
@@ -205,7 +220,6 @@ def check_track_status():
     elif left_on_track and not right_on_track:
         return "DRIFTING_RIGHT"
     else:
-        # Fallback (shouldn't really hit this with simple digital logic)
         return "ON_TRACK"
 
 
@@ -220,23 +234,19 @@ LOX3_ADDRESS = 0x32  # Front1
 LOX4_ADDRESS = 0x33  # Front2
 
 # -------- XSHUT pins --------
-SHT_LOX1_PIN = board.D5  # Right XSHUT
+SHT_LOX1_PIN = board.D5   # Right XSHUT
 SHT_LOX2_PIN = board.D17  # Left  XSHUT
-SHT_LOX3_PIN = board.D6  # Front1 XSHUT
+SHT_LOX3_PIN = board.D6   # Front1 XSHUT
 SHT_LOX4_PIN = board.D27  # Front2 XSHUT
 
 # ---- hardware bring-up (VL53L0X) ----
 i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
 
 # XSHUT controls
-xshut1 = DigitalInOut(SHT_LOX1_PIN);
-xshut1.direction = Direction.OUTPUT
-xshut2 = DigitalInOut(SHT_LOX2_PIN);
-xshut2.direction = Direction.OUTPUT
-xshut3 = DigitalInOut(SHT_LOX3_PIN);
-xshut3.direction = Direction.OUTPUT
-xshut4 = DigitalInOut(SHT_LOX4_PIN);
-xshut4.direction = Direction.OUTPUT
+xshut1 = DigitalInOut(SHT_LOX1_PIN); xshut1.direction = Direction.OUTPUT
+xshut2 = DigitalInOut(SHT_LOX2_PIN); xshut2.direction = Direction.OUTPUT
+xshut3 = DigitalInOut(SHT_LOX3_PIN); xshut3.direction = Direction.OUTPUT
+xshut4 = DigitalInOut(SHT_LOX4_PIN); xshut4.direction = Direction.OUTPUT
 
 # Sensor objects
 lox1 = lox2 = lox3 = lox4 = None
@@ -315,14 +325,10 @@ def setID():
 
 
 # =============================================================================================================
-# Motor constants =============================================================================================
+# Motor commands =============================================================================================
 # =============================================================================================================
 
-
-
-
 def send_set_vel_pwm(left_pwm, right_pwm):
-    
     L = round(left_pwm)
     R = round(right_pwm)
     _send_line(f"SET_VEL L={L} R={R}")
@@ -331,23 +337,20 @@ def send_set_vel_pwm(left_pwm, right_pwm):
 # ==========================================================================================================
 # Servo helpers ============================================================================================
 # ==========================================================================================================
+
 def send_servo_raise(deg: int):
-    """
-    Counterclockwise relative move by 'deg' (0..180).
-    """
+    """Counterclockwise relative move by 'deg' (0..180)."""
     d = max(0, min(180, int(deg)))
     _send_line(f"SERVO A={d}")
 
 
 def send_servo_lower():
-    """
-    Clockwise return to the original 'home' angle set before the last raise.
-    """
+    """Return to original 'home' angle."""
     _send_line("SERVO REV")
 
 
 def send_servo_pos():
-    """Ask Arduino to print current servo angle (useful for debugging)."""
+    """Ask Arduino to print current servo angle."""
     _send_line("SERVO POS")
 
 
@@ -453,12 +456,16 @@ def handle_ir_correction():
 
     Returns:
       True  if an IR-based correction command was sent (skip ToF this cycle)
-      False if no correction (ToF logic should run as normal)
+      False if no correction or on error (ToF logic should run as normal)
     """
-    # True = dark/on track, False = light/off track (bumpers)
-    left_digital, right_digital = read_ir_digital()
+    try:
+        left_digital, right_digital = read_ir_digital()
+    except Exception as e:
+        print(f"[IR ERROR] handle_ir_correction failed: {e}")
+        # On any IR error, just fall back to ToF this cycle
+        return False
 
-    # Both on track -> no correction, return to ToF ASAP
+    # Both on track -> no correction, let ToF handle it
     if left_digital and right_digital:
         return False
 
@@ -468,7 +475,6 @@ def handle_ir_correction():
         send_set_vel_pwm(0, 0)
         send_set_vel_pwm(100, -100)
         time.sleep(0.1)
-        
         state_history(71)
         return True
 
@@ -478,12 +484,11 @@ def handle_ir_correction():
         send_set_vel_pwm(0, 0)
         send_set_vel_pwm(-100, 100)
         time.sleep(0.1)
-        
         state_history(72)
         return True
 
-    # If both see light (both False) -> unexpected; play it safe:
-    
+    # If both see light (both False) -> unexpected; play it safe: stop
+    send_set_vel_pwm(0, 0)
     state_history(73)
     return True
 
@@ -608,13 +613,17 @@ def driving():
         fFL = medfilt(arrFL, kernel_size=3)[-1]
 
         # Decision logic (includes IR checking)
-        print("running: ", fR)
+        print("running: ", fR, fL, fFR, fFL)
         interpret_data(fR, fL, fFR, fFL)
+
+        # Drain any IR serial messages from Arduino to avoid buffer clog
+        _parse_ir_from_serial()
 
 
 # ==========================================================================================================
 # Main =====================================================================================================
 # ==========================================================================================================
+
 def main():
     print("Starting")
 
