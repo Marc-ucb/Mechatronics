@@ -1,7 +1,151 @@
-# -*- coding: utf-8 -*-
+def main():
+    global shutting_down
+    
+    print("\n=== IR-Only Robot Control (DIAGNOSTIC VERSION) ===")
+    sys.stdout.flush()
+    print("Starting in 3 seconds...\n")
+    sys.stdout.flush()
+    time.sleep(3)
+    
+    error_count = 0
+    max_errors = 5
+    iteration = 0
+    last_iteration_time = time.time()
+    
+    print("[INFO] Entering main loop - script should run forever")
+    sys.stdout.flush()
+    
+    while not shutting_down:
+        try:
+            iteration += 1
+            current_time = time.time()
+            time_since_last = current_time - last_iteration_time
+            
+            # Heartbeat every 50 iterations
+            if iteration % 50 == 0:
+                print(f"\n[HEARTBEAT] Iteration {iteration} - Still alive! (Total runtime: {current_time - last_iteration_time:.1f}s)")
+                sys.stdout.flush()
+            
+            print(f"\n[ITER {iteration}] --- Starting iteration (gap: {time_since_last:.3f}s) ---")
+            sys.stdout.flush()
+            
+            if time_since_last > 2.0:
+                print(f"[WARNING] Large gap between iterations! Possible hang detected.")
+                sys.stdout.flush()
+            
+            step_start = time.time()
+            
+            # Step 1: Read sensors
+            print(f"[ITER {iteration}] Reading IR sensors...")
+            sys.stdout.flush()
+            
+            left_on_track, right_on_track = read_ir_sensors()
+            
+            step_time = time.time() - step_start
+            print(f"[ITER {iteration}] Sensors: left={left_on_track}, right={right_on_track} ({step_time:.3f}s)")
+            sys.stdout.flush()
+            
+            if step_time > 0.5:
+                print(f"[WARNING] Sensor read took {step_time:.3f}s!")
+                sys.stdout.flush()
+            
+            # Step 2: Send motor command
+            step_start = time.time()
+            
+            if left_on_track and right_on_track:
+                print(f"[ITER {iteration}] Both ON -> STRAIGHT (200, 200)")
+                sys.stdout.flush()
+                send_motor_command(200, 200)
+            
+            elif left_on_track and not right_on_track:
+                print(f"[ITER {iteration}] Right OFF -> LEFT (-80, 80)")
+                sys.stdout.flush()
+                send_motor_command(-80, 80)
+            
+            elif right_on_track and not left_on_track:
+                print(f"[ITER {iteration}] Left OFF -> RIGHT (80, -80)")
+                sys.stdout.flush()
+                send_motor_command(80, -80)
+            
+            else:
+                print(f"[ITER {iteration}] BOTH OFF -> BACKUP (-150, -150)")
+                sys.stdout.flush()
+                send_motor_command(-150, -150)
+                time.sleep(0.5)
+                send_motor_command(0, 0)
+                time.sleep(0.1)
+            
+            step_time = time.time() - step_start
+            if step_time > 0.5:
+                print(f"[WARNING] Motor command took {step_time:.3f}s!")
+                sys.stdout.flush()
+            
+            # Reset error count on successful iteration
+            error_count = 0
+            time.sleep(0.05)
+            last_iteration_time = time.time()
+            
+        except KeyboardInterrupt:
+            print("\n[INTERRUPT] Keyboard interrupt - stopping")
+            sys.stdout.flush()
+            shutting_down = True
+            
+        except Exception as e:
+            import traceback
+            error_count += 1
+            print(f"\n{'='*80}")
+            print(f"[ERROR] Exception in iteration {iteration}")
+            print(f"[ERROR] Type: {type(e).__name__}")
+            print(f"[ERROR] Message: {e}")
+            print(f"[ERROR] Count: {error_count}/{max_errors}")
+            traceback.print_exc()
+            print(f"{'='*80}\n")
+            sys.stdout.flush()
+            
+            try:
+                send_motor_command(0, 0)
+            except:
+                pass
+            
+            if error_count >= max_errors:
+                print(f"\n[FATAL] Too many errors - shutting down")
+                sys.stdout.flush()
+                shutting_down = True
+            else:
+                print(f"[RECOVERY] Waiting 1s before retry...")
+                sys.stdout.flush()
+                time.sleep(1)
+            
+            last_iteration_time = time.time()
+    
+    # Clean shutdown
+    print("\n[SHUTDOWN] Stopping motors...")
+    sys.stdout.flush()
+    send_motor_command(0, 0)
+    print("[SHUTDOWN] Complete. Exited gracefully.")
+    sys.stdout.flush()# -*- coding: utf-8 -*-
 import time
+import sys
+import signal
 import board
 from digitalio import DigitalInOut, Direction
+
+# Force immediate output flushing so we see prints before crashes
+sys.stdout.flush()
+sys.stderr.flush()
+
+# Flag to track if we're shutting down
+shutting_down = False
+
+def signal_handler(sig, frame):
+    global shutting_down
+    print(f"\n[SIGNAL] Received signal {sig}")
+    sys.stdout.flush()
+    shutting_down = True
+    
+# Catch termination signals
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 # ==========================================================================================================
 # Serial Setup for Arduino Motor Control ===================================================================
@@ -26,11 +170,15 @@ def _send_line(line: str):
     if _serial_ok and _ser is not None:
         try:
             _ser.write(msg)
+            sys.stdout.flush()  # Force output
         except Exception as e:
             print(f"[serial err] {e}. Falling back to print.")
+            sys.stdout.flush()
             print(line.rstrip())
+            sys.stdout.flush()
     else:
         print(line.rstrip())
+        sys.stdout.flush()
 
 
 def send_motor_command(left_pwm, right_pwm):
