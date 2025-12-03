@@ -173,17 +173,13 @@ def robotState(state: int):
             send_set_vel_pwm(0, 0)
             time.sleep(0.1)
             send_set_vel_pwm(full, -full)
-            time.sleep(0.4)
+            time.sleep(.4)
             send_set_vel_pwm(0, 0)
             state_history(3)
 
-        case 7:  # Off Track (no longer used)
-            send_set_vel_pwm(0, 0)
-            state_history(7)
-
 
 # ==========================================================================================================
-# TOF Sensor Logic (ONLY LEFT/RIGHT FOR STEERING) ==========================================================
+# TOF Sensor Logic (UPDATED) ===============================================================================
 # ==========================================================================================================
 
 def safe_read(sensor, name):
@@ -196,37 +192,58 @@ def safe_read(sensor, name):
 
 def interpret_data(r, l, fr, fl):
     """
-    ONLY left/right ToF steering
-    front sensors only for obstacle detection
+    Improved ToF-only navigation:
+    - Front sensors detect when to turn
+    - Left/right sensors center the robot
+    - Turning logic reliable in hallways
     """
+
     full = 255
 
-    # Emergency stop
-    if fr < 100 or fl < 100 or r < 20 or l < 20:
+    # =============== EMERGENCY STOP ==================
+    if min(fr, fl) < 80:
         robotState(1)
         return
 
-    # 90-degree turns
-    if abs(r - l) > 400 and (fr < 350 or fl < 350):
-        if previous_states and previous_states[-1] in (2, 3):
-            return
-        if r > l:
-            robotState(2)
-        else:
+    # =============== TURN LOGIC ======================
+    TURN_THRESHOLD = 500     # side must be this open
+    FRONT_BLOCK = 300        # front blocked at this distance
+
+    if min(fr, fl) < FRONT_BLOCK:
+
+        # Left open → turn left
+        if l > TURN_THRESHOLD and r < TURN_THRESHOLD:
+            print("Turn Left triggered")
             robotState(3)
-        return
+            return
 
-    # Steering correction
-    if abs(r - l) >= 30:
+        # Right open → turn right
+        if r > TURN_THRESHOLD and l < TURN_THRESHOLD:
+            print("Turn Right triggered")
+            robotState(2)
+            return
+
+        # Both open → choose larger gap
         if r > l:
-            send_set_vel_pwm(10, 200)
-            state_history(10)
+            print("Choosing Right turn")
+            robotState(2)
+            return
         else:
-            send_set_vel_pwm(200, 10)
-            state_history(11)
+            print("Choosing Left turn")
+            robotState(3)
+            return
+
+    # =============== CORRIDOR CENTERING ==================
+    diff = r - l
+
+    if abs(diff) > 40:
+        if diff > 0:
+            send_set_vel_pwm(160, 220)  # drift left
+        else:
+            send_set_vel_pwm(220, 160)  # drift right
         return
 
-    # Drive straight
+    # =============== DRIVE STRAIGHT ==================
     send_set_vel_pwm(200, 200)
     state_history(99)
 
