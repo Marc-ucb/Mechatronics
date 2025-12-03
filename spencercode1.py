@@ -228,8 +228,10 @@ def interpret_data(r, l, fr, fl):
         right_open = r > 350
         left_open = l > 350
         
-        print(f"  → Right: {'OPEN' if right_open else 'CLOSED'} ({r:.0f}mm)")
-        print(f"  → Left: {'OPEN' if left_open else 'CLOSED'} ({l:.0f}mm)")
+        right_status = 'OPEN' if right_open else 'CLOSED'
+        left_status = 'OPEN' if left_open else 'CLOSED'
+        print(f"  → Right: {right_status} ({r:.0f} mm)")
+        print(f"  → Left: {left_status} ({l:.0f} mm)")
         
         if right_open and not left_open:
             print("  → DECISION: Turn RIGHT")
