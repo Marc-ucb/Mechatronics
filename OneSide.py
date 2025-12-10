@@ -145,16 +145,12 @@ def setID():
 # Motor constants =============================================================================================
 # =============================================================================================================
 
-full_Speed = 1
-half_Speed = 0.5
-quarter_Speed = 0.25
-three_Quarter_Speed = 0.75
 
 
 def send_set_vel_pwm(left_pwm, right_pwm):
     speed = half_Speed
-    L = round(left_pwm * speed)
-    R = round(right_pwm * speed)
+    L = round(left_pwm)
+    R = round(right_pwm)
     _send_line(f"SET_VEL L={L} R={R}")
 
 
